@@ -1,6 +1,6 @@
 # 🎵 Alexa Jellyfin HA Player
 
-Solution complète pour diffuser et piloter votre musique hébergée sur un NAS (**Jellyfin**) directement sur des enceintes **Amazon Echo (Alexa)**, avec une interface tactile tout-en-un sur **Home Assistant** (pochettes, paroles défilantes synchronisées `.lrc`, radios web et Spotify).
+Solution complète pour diffuser et piloter votre musique hébergée sur un NAS (**Jellyfin**) directement sur des enceintes **Amazon Echo (Alexa)**, avec une interface tactile tout-en-un sur **Home Assistant** (pochettes, paroles défilantes synchronisées `.lrc`, radios web et Spotify en option).
 
 ---
 
@@ -59,7 +59,7 @@ alexa-jellyfin-ha-player/
 │   └── jellyfin.conf           # Serveur Jellyfin
 ├── ha-card/                    # Carte Lovelace tout-en-un Home Assistant
 │   ├── nas-music-player-card.js
-│   └── card-example.yaml
+│   └── card-example.yaml       # Exemples de configuration YAML
 └── README.md
 ```
 
@@ -146,13 +146,86 @@ Copiez les configurations du dossier `nginx/` dans le dossier de configuration d
 
 ### Étape 4 : Configurer la Carte Multimédias dans Home Assistant
 
-1. Copiez `ha-card/nas-music-player-card.js` dans le dossier `www` de votre Home Assistant :
-   - Chemin : `/config/www/nas-music-player-card.js` (ou `/opt/HA/www/nas-music-player-card.js`).
-2. Dans Home Assistant, allez dans **Paramètres** > **Tableaux de bord** > Menu 3 points en haut à droite > **Ressources** :
-   - Cliquez sur **Ajouter une ressource**.
+#### 1. Installation du fichier JavaScript
+1. Copiez le fichier `ha-card/nas-music-player-card.js` dans le dossier `www` de votre Home Assistant :
+   - Emplacement : `/config/www/nas-music-player-card.js`
+2. Dans Home Assistant, allez dans **Paramètres** > **Tableaux de bord** > Menu 3 points (en haut à droite) > **Ressources** :
+   - Cliquez sur **Ajouter une ressource**
    - URL : `/local/nas-music-player-card.js?v=1.0.0`
-   - Type : `Module JavaScript`.
-3. Ajoutez la carte dans votre tableau de bord en mode YAML en vous inspirant de `ha-card/card-example.yaml`.
+   - Type : `Module JavaScript`
+
+#### 2. Configuration via l'Éditeur Graphique (UI)
+Ajoutez une carte personnalisée `custom:nas-music-player-card`. Vous pouvez la configurer directement depuis l'interface visuelle :
+- **URL Jellyfin** : ex. `https://jelly.mondomaine.fr`
+- **Clé API Jellyfin** : créée dans Jellyfin (*Tableau de bord > Avancé > Clés d'API*)
+- **Enceinte par défaut** : ex. `media_player.echo_salon`
+- **Nom d'invocation vocal** : ex. `mon nas`
+- **Spotify** : case à cocher pour l'activer ou la masquer entièrement.
+
+#### 3. Configuration Avancée en YAML (Dossiers et Catégories Personnalisés)
+Pour adapter la carte aux dossiers spécifiques de votre serveur Jellyfin (ex: Compilations, Rock, Pop...) ou masquer Spotify :
+
+```yaml
+type: custom:nas-music-player-card
+jellyfin_url: "https://jelly.mondomaine.fr"
+jellyfin_token: "votre_cle_api_jellyfin"
+default_speaker: media_player.echo_salon
+skill_invocation: "mon nas"
+
+# Spotify : masqué par défaut si non configuré
+show_spotify: false
+
+# Définissez vos propres onglets et dossiers Jellyfin :
+categories:
+  - id: "favorites"
+    label: "⭐ Favoris"
+    type: "favorites"
+
+  - id: "albums"
+    label: "💿 Tous les Albums"
+    type: "jellyfin"
+    itemTypes: "MusicAlbum"
+
+  - id: "compilations"
+    label: "📁 Compilations"
+    type: "jellyfin"
+    parentId: "91dee17855cfbed5eaab9fd7aaed6566"
+    itemTypes: "MusicAlbum"
+
+  - id: "rock"
+    label: "🎸 Rock"
+    type: "jellyfin"
+    parentId: "3ba5494bda5a2b42d7cb341bc2cb8f58"
+    itemTypes: "MusicAlbum"
+
+  - id: "playlists"
+    label: "📑 Playlists"
+    type: "jellyfin"
+    itemTypes: "Playlist"
+
+  - id: "radios"
+    label: "📻 Radios"
+    type: "radios"
+
+# Liste de vos enceintes :
+speakers:
+  - id: media_player.echo_salon
+    name: "Echo Salon"
+    zone: "Salon"
+    icon: "🛋️"
+    isAlexa: true
+  - id: media_player.echo_chambre
+    name: "Echo Chambre"
+    zone: "Chambre"
+    icon: "🛏️"
+    isAlexa: true
+```
+
+> 💡 **Comment trouver le `parentId` d'un dossier dans Jellyfin ?**  
+> 1. Ouvrez Jellyfin dans votre navigateur web.  
+> 2. Cliquez sur le dossier ou la bibliothèque que vous souhaitez afficher.  
+> 3. Regardez la barre d'adresse de votre navigateur : `https://jelly.mondomaine.fr/web/index.html#!/item?id=3ba5494bda5a2b42d7cb341bc2cb8f58`.  
+> 4. Copiez la chaîne de caractères après `?id=` : c'est votre `parentId` !
 
 ---
 
@@ -163,10 +236,11 @@ Copiez les configurations du dossier `nginx/` dans le dossier de configuration d
   - *"Alexa, demande à mon nas de jouer l'album 70s"* (conversion phonétique intégrée)
   - *"Alexa, pause / suivant / précédent"*
 - 📱 **Interface Tactile Lovelace Complète** :
-  - Navigation par Albums, Artistes, Favoris, Compilations.
+  - Navigation par Albums, Artistes, Favoris, Playlists et dossiers sur mesure.
   - Paroles karaoké synchronisées en temps réel (fichiers `.lrc` Jellyfin ou base mondiale LRCLIB).
   - Gestion du volume individuel par enceinte et multi-diffusion.
-  - Gestionnaire de stations de radio intégré (Audio Player, TuneIn, Radioplayer).
+  - Gestionnaire graphique des stations de radio (Audio Player, TuneIn, Radioplayer).
+  - Spotify entièrement désactivable.
 
 ---
 

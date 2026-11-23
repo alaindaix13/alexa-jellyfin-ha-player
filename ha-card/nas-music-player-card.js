@@ -10,9 +10,9 @@
  * - Auto-fallback & filtering to ensure 100% cover art and full tracklist display
  */
 
-const JELLYFIN_URL = "https://jelly.alaindaix.fr";
-const JELLYFIN_USER = "1b534563ad8e4886abe14ab4a29ed6bc";
-const JELLYFIN_TOKEN = "a06ee992908547feb6d284458eb11493";
+const JELLYFIN_URL = "https://jelly.votredomaine.fr";
+const JELLYFIN_USER = "";
+const JELLYFIN_TOKEN = "";
 const AUTH_HEADER = `MediaBrowser Client="Alexa", Device="Echo", DeviceId="test", Version="0.3.1", Token="${JELLYFIN_TOKEN}"`;
 
 const DEFAULT_SPEAKERS = [
@@ -107,7 +107,7 @@ function normalizeLookalikes(str) {
     .replace(/\u0445/g, "x");
 }
 
-function buildVoiceCmd(item) {
+function buildVoiceCmd(item, invocation = "mon nas") {
   let title = (item.Name || item.name || "").trim();
   let artist = (item.AlbumArtist || item.artist || (item.Artists && item.Artists[0]) || "").trim();
 
@@ -137,15 +137,16 @@ function buildVoiceCmd(item) {
   title = title.replace(/&/g, " and ").replace(/\s+/g, " ").trim();
   artist = artist.replace(/&/g, " and ").replace(/\s+/g, " ").trim();
 
+  const inv = invocation || "mon nas";
   if (item.Type === "Playlist") {
-    return `demande à mon nas de jouer la playlist ${title}`;
+    return `demande à ${inv} de jouer la playlist ${title}`;
   }
 
   const isVarious = !artist || /various|compilation|plusieurs/i.test(artist);
   if (isVarious) {
-    return `demande à mon nas de jouer l'album ${title}`;
+    return `demande à ${inv} de jouer l'album ${title}`;
   }
-  return `demande à mon nas de jouer l'album ${title} de ${artist}`;
+  return `demande à ${inv} de jouer l'album ${title} de ${artist}`;
 }
 
 class NasMusicCard extends HTMLElement {
@@ -352,9 +353,40 @@ class NasMusicCard extends HTMLElement {
     this.syncOffset = parseFloat(localStorage.getItem("nas_music_sync_offset") || "0") || 0;
   }
 
+  get skillInvocation() {
+    return this._config?.skill_invocation || "mon nas";
+  }
+  isSpotifyEnabled() {
+    return Boolean(this._config?.spotify_player) && this._config?.show_spotify !== false;
+  }
+  get spotifyPlayer() {
+    if (this._config?.spotify_player) return this._config.spotify_player;
+    if (this._config?.show_spotify === false) return null;
+    if (this.jellyfinUrl.includes("alaindaix.fr")) return "media_player.spotifyplus_alaindaix";
+    return null;
+  }
   getSpeakers() {
     if (Array.isArray(this._config?.speakers) && this._config.speakers.length > 0) {
       return this._config.speakers;
+    }
+    // Auto-détection des media_players disponibles dans HA si non configurés
+    if (this._hass?.states) {
+      const detected = [];
+      for (const [id, st] of Object.entries(this._hass.states)) {
+        if (id.startsWith("media_player.") && !id.includes("spotify") && !id.includes("browser_mod")) {
+          const isAlexa = id.includes("echo") || id.includes("chambre") || id.includes("salon") || Boolean(st.attributes?.available);
+          const isDlna = id.includes("dlna") || id.includes("sonoro");
+          detected.push({
+            id: id,
+            name: st.attributes?.friendly_name || id.replace("media_player.", ""),
+            zone: st.attributes?.friendly_name || "Général",
+            isAlexa: isAlexa,
+            isDlna: !isAlexa && isDlna,
+            icon: isAlexa ? "🔊" : "📻"
+          });
+        }
+      }
+      if (detected.length > 0) return detected;
     }
     return DEFAULT_SPEAKERS;
   }
@@ -362,7 +394,7 @@ class NasMusicCard extends HTMLElement {
     return (this._config?.jellyfin_url || JELLYFIN_URL).replace(/\/+$/, "");
   }
   get jellyfinUser() {
-    return this._config?.jellyfin_user || JELLYFIN_USER;
+    return this._config?.jellyfin_user || this._detectedUserId || JELLYFIN_USER;
   }
   get jellyfinToken() {
     return this._config?.jellyfin_token || JELLYFIN_TOKEN;
@@ -371,11 +403,66 @@ class NasMusicCard extends HTMLElement {
     const token = this.jellyfinToken;
     return `MediaBrowser Client="Alexa", Device="Echo", DeviceId="test", Version="0.3.1", Token="${token}"`;
   }
-  get spotifyPlayer() {
-    return this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
-  }
   get radioProvider() {
     return this._config?.radio_provider || "tunein";
+  }
+
+  getCategories() {
+    // 1. Catégories personnalisées via configuration YAML ou Editeur
+    if (Array.isArray(this._config?.categories) && this._config.categories.length > 0) {
+      const cats = {};
+      for (const c of this._config.categories) {
+        cats[c.id] = {
+          id: c.id,
+          label: c.label || c.name || c.id,
+          type: c.type || "jellyfin",
+          parentId: c.parentId || null,
+          itemTypes: c.itemTypes || (c.type === "playlists" ? "Playlist" : "MusicAlbum")
+        };
+      }
+      if (this.isSpotifyEnabled() && !cats.spotify) {
+        cats.spotify = { id: "spotify", label: "🟢 Spotify", type: "spotify" };
+      }
+      if (!cats.nowplaying) {
+        cats.nowplaying = { id: "nowplaying", label: "▶ En lecture", type: "nowplaying" };
+      }
+      return cats;
+    }
+
+    // 2. Rétro-compatibilité pour Alain Daix (si non configuré et sur son domaine)
+    if (this.jellyfinUrl.includes("alaindaix.fr")) {
+      const alainCats = {
+        favorites: { id: "favorites", label: "⭐ Favoris", type: "favorites" },
+        compilations: { id: "compilations", label: "📁 Compilations", type: "jellyfin", parentId: "91dee17855cfbed5eaab9fd7aaed6566", itemTypes: "MusicAlbum" },
+        international: { id: "international", label: "🌍 International", type: "jellyfin", parentId: "3ba5494bda5a2b42d7cb341bc2cb8f58", itemTypes: "MusicAlbum" },
+        variete: { id: "variete", label: "🇫🇷 Français", type: "jellyfin", parentId: "7b119c236676d5b7fff4206fee589f8b", itemTypes: "MusicAlbum" },
+        classique: { id: "classique", label: "🎻 Classique", type: "jellyfin", parentId: "f59fccdb979c9f8659af94f76dad3e85", itemTypes: "MusicAlbum" },
+        radios: { id: "radios", label: "📻 Radios", type: "radios" }
+      };
+      if (this.isSpotifyEnabled()) {
+        alainCats.spotify = { id: "spotify", label: "🟢 Spotify", type: "spotify" };
+      }
+      alainCats.nowplaying = { id: "nowplaying", label: "▶ En lecture", type: "nowplaying" };
+      return alainCats;
+    }
+
+    // 3. Catégories génériques universelles (fonctionne immédiatement avec tout Jellyfin)
+    const universalCats = {
+      favorites: { id: "favorites", label: "⭐ Favoris", type: "favorites" },
+      albums: { id: "albums", label: "💿 Tous les Albums", type: "jellyfin", itemTypes: "MusicAlbum" },
+      playlists: { id: "playlists", label: "📑 Playlists", type: "jellyfin", itemTypes: "Playlist" }
+    };
+
+    if (this._config?.show_radios !== false) {
+      universalCats.radios = { id: "radios", label: "📻 Radios", type: "radios" };
+    }
+
+    if (this.isSpotifyEnabled()) {
+      universalCats.spotify = { id: "spotify", label: "🟢 Spotify", type: "spotify" };
+    }
+
+    universalCats.nowplaying = { id: "nowplaying", label: "▶ En lecture", type: "nowplaying" };
+    return universalCats;
   }
 
 
@@ -387,7 +474,7 @@ class NasMusicCard extends HTMLElement {
     }
 
     // Détection automatique : Si Spotify commence à jouer alors que le NAS ou le Système Audio tournait
-    const spState = hass.states?.[this.spotifyPlayer];
+    const spState = this.spotifyPlayer ? hass.states?.[this.spotifyPlayer] : null;
     const speaker = hass.states?.[this.selectedSpeaker];
     const isSpotifyPlaying = (spState?.state === "playing") || (speaker?.state === "playing" && speaker?.attributes?.app_name === "Spotify");
     if (isSpotifyPlaying) {
@@ -1023,7 +1110,7 @@ class NasMusicCard extends HTMLElement {
   }
 
   async loadCategory(catId, page = 0) {
-    const cat = CATEGORIES[catId];
+    const cat = this.getCategories()[catId];
     if (!cat) return;
 
     this.activeCategory = catId;
@@ -1098,7 +1185,10 @@ class NasMusicCard extends HTMLElement {
 
     try {
       const startIndex = page * this.pageSize;
-      const url = `${this.jellyfinUrl}/Users/${this.jellyfinUser}/Items?ParentId=${cat.parentId}&IncludeItemTypes=${cat.itemTypes}&Recursive=True&SortBy=SortName&Limit=${this.pageSize}&StartIndex=${startIndex}&Fields=AlbumArtist,ChildCount,ImageTags`;
+      const parentParam = cat.parentId ? `ParentId=${cat.parentId}&` : "";
+      const types = cat.itemTypes || "MusicAlbum";
+      const typesParam = `IncludeItemTypes=${types}&`;
+      const url = `${this.jellyfinUrl}/Users/${this.jellyfinUser}/Items?${parentParam}${typesParam}Recursive=True&SortBy=SortName&Limit=${this.pageSize}&StartIndex=${startIndex}&Fields=AlbumArtist,ChildCount,ImageTags`;
       const res = await fetch(url, { headers: { "Authorization": this.authHeader } });
       const data = await res.json();
       this.searchResults = data.Items || [];
@@ -1568,7 +1658,7 @@ class NasMusicCard extends HTMLElement {
   isSpotifyActive() {
     if (!this._hass) return false;
     const speaker = this._hass.states?.[this.selectedSpeaker];
-    const spState = this._hass.states?.[this.spotifyPlayer];
+    const spState = this.spotifyPlayer ? this._hass.states?.[this.spotifyPlayer] : null;
     const nasSensor = this._hass.states?.["sensor.nas_music_now_playing"];
     const isLocalSystem = this.isLocalSystemSpeaker();
     const isLocalAudioPlaying = window._nasMusicLocalAudio && !window._nasMusicLocalAudio.paused;
@@ -2118,7 +2208,7 @@ class NasMusicCard extends HTMLElement {
 
     if (isSpotifyActive) {
       const pos = this.getCurrentPlaybackPosition();
-      const spState = this._hass.states?.[this.spotifyPlayer];
+      const spState = this.spotifyPlayer ? this._hass.states?.[this.spotifyPlayer] : null;
       const dur = spState?.attributes?.media_duration || 9999;
       const newPos = Math.max(0, Math.min(dur, pos + seconds));
       this._hass.callService("media_player", "media_seek", {
@@ -2339,7 +2429,7 @@ class NasMusicCard extends HTMLElement {
     }
 
     // --- ENCEINTE ALEXA ---
-    const cmd = item.cmd || item.customCmd || buildVoiceCmd(item);
+    const cmd = item.cmd || item.customCmd || buildVoiceCmd(item, this.skillInvocation);
     this.castAlexa(cmd);
     if (shuffle) {
       setTimeout(() => {
@@ -2410,12 +2500,13 @@ class NasMusicCard extends HTMLElement {
 
     if (this.isLocalSystemSpeaker()) {
       const spPlus = this._hass?.states?.[this.spotifyPlayer];
-      const spOfficial = this._hass?.states?.["media_player.spotify_alaindaix"];
+      const spOfficialId = this._config?.spotify_official_player || (this._hass?.states?.["media_player.spotify_alaindaix"] ? "media_player.spotify_alaindaix" : null);
+      const spOfficial = spOfficialId ? this._hass?.states?.[spOfficialId] : null;
       if (spPlus?.state === "playing") {
         this._hass.callService("media_player", "media_pause", { entity_id: this.spotifyPlayer }).catch(() => {});
       }
       if (spOfficial?.state === "playing") {
-        this._hass.callService("media_player", "media_pause", { entity_id: "media_player.spotify_alaindaix" }).catch(() => {});
+        if (spOfficialId) this._hass.callService("media_player", "media_pause", { entity_id: spOfficialId }).catch(() => {});
       }
       if (this._hass?.states?.["media_player.systeme_audio"]?.state === "playing") {
         this._hass.callService("media_player", "media_pause", { entity_id: "media_player.systeme_audio" }).catch(() => {});
@@ -2476,7 +2567,7 @@ class NasMusicCard extends HTMLElement {
       const validArtist = (trackArtist && !/various|compilation|plusieurs|inconnu/i.test(trackArtist))
         ? normalizeLookalikes(trackArtist).replace(/[\[\]()"]/g, "").replace(/&/g, " and ").trim()
         : "";
-      const cmd = `demande à mon nas de jouer le titre ${trackName}${validArtist ? " de " + validArtist : ""}`;
+      const cmd = `demande à ${this.skillInvocation} de jouer le titre ${trackName}${validArtist ? " de " + validArtist : ""}`;
       this.castAlexa(cmd);
     }
   }
@@ -2504,9 +2595,10 @@ class NasMusicCard extends HTMLElement {
     if (spState && (spState.state === "playing" || spState.attributes?.app_name === "Spotify")) {
       this._hass.callService("media_player", "media_stop", { entity_id: this.selectedSpeaker });
     }
-    const spAlain = this._hass.states?.["media_player.spotify_alaindaix"];
+    const spAlainId = this._config?.spotify_official_player || (this._hass?.states?.["media_player.spotify_alaindaix"] ? "media_player.spotify_alaindaix" : null);
+    const spAlain = spAlainId ? this._hass.states?.[spAlainId] : null;
     if (spAlain && spAlain.state === "playing") {
-      this._hass.callService("media_player", "media_pause", { entity_id: "media_player.spotify_alaindaix" });
+      if (spAlainId) this._hass.callService("media_player", "media_pause", { entity_id: spAlainId }).catch(() => {});
     }
     const spPlus = this._hass.states?.[this.spotifyPlayer];
     if (spPlus && spPlus.state === "playing") {
@@ -2633,9 +2725,10 @@ class NasMusicCard extends HTMLElement {
       this._localPlayOffset = 0;
 
       // Stopper Spotify si actif pour libérer l'enceinte Echo
-      const spAlain = this._hass.states?.["media_player.spotify_alaindaix"];
+      const spAlainId = this._config?.spotify_official_player || (this._hass?.states?.["media_player.spotify_alaindaix"] ? "media_player.spotify_alaindaix" : null);
+    const spAlain = spAlainId ? this._hass.states?.[spAlainId] : null;
       if (spAlain && spAlain.state === "playing") {
-        this._hass.callService("media_player", "media_pause", { entity_id: "media_player.spotify_alaindaix" });
+        if (spAlainId) this._hass.callService("media_player", "media_pause", { entity_id: spAlainId }).catch(() => {});
       }
       const spPlus = this._hass.states?.[this.spotifyPlayer];
       if (spPlus && spPlus.state === "playing") {
@@ -4244,7 +4337,7 @@ class NasMusicCard extends HTMLElement {
 
         <!-- CATEGORY PILLS -->
         <div class="tabs-wrap">
-          ${Object.values(CATEGORIES).map(cat => `
+          ${Object.values(this.getCategories()).map(cat => `
             <button class="tab-pill ${this.activeCategory === cat.id ? 'active' : ''}" data-cat="${cat.id}">
               ${cat.label}
             </button>
@@ -4699,7 +4792,7 @@ class NasMusicCard extends HTMLElement {
             enqueue: "replace"
           }).catch(() => {});
         } else {
-          const cmd = alb.customCmd || buildVoiceCmd(alb);
+          const cmd = alb.customCmd || buildVoiceCmd(alb, this.skillInvocation);
           this._hass.callService("media_player", "play_media", {
             entity_id: sid,
             media_content_type: "custom",
@@ -4735,7 +4828,7 @@ class NasMusicCard extends HTMLElement {
             });
           }
         } else {
-          const cmd = `demande à mon nas de jouer l'album ${albName}${albArtist && !/various|compilation|plusieurs/i.test(albArtist) ? ' de ' + albArtist : ''}`;
+          const cmd = `demande à ${this.skillInvocation} de jouer l'album ${albName}${albArtist && !/various|compilation|plusieurs/i.test(albArtist) ? ' de ' + albArtist : ''}`;
           this._hass.callService("media_player", "play_media", {
             entity_id: sid,
             media_content_type: "custom",
@@ -4865,7 +4958,7 @@ class NasMusicCard extends HTMLElement {
 
     let sectionHeader = "";
     if (this.currentView === "category") {
-      const catLabel = CATEGORIES[this.activeCategory]?.label || "";
+      const catLabel = this.getCategories()[this.activeCategory]?.label || "";
       sectionHeader = `<div style="font-size:12px;color:#9ca3af;margin:2px 2px 10px;font-weight:600;display:flex;justify-content:space-between;align-items:center;">
         <span>${catLabel}</span>
         <span style="font-size:11px;color:#6b7280;">${this.totalItems} album(s) au total</span>
@@ -5958,16 +6051,45 @@ class NasMusicCardEditor extends HTMLElement {
     this._hass = hass;
   }
 
+  _notifyChange(newConfig) {
+    this._config = newConfig;
+    this.dispatchEvent(new CustomEvent("config-changed", {
+      detail: { config: newConfig },
+      bubbles: true,
+      composed: true
+    }));
+  }
+
   render() {
+    const isSpotify = this._config.show_spotify !== false && Boolean(this._config.spotify_player);
+
     this.innerHTML = `
       <div style="padding: 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--primary-text-color);">
         <h3 style="margin-top:0;margin-bottom:8px;font-size:15px;display:flex;align-items:center;gap:6px;">
           🎵 Configuration du lecteur NAS Music
         </h3>
         <p style="font-size:12px;color:var(--secondary-text-color);margin-bottom:14px;line-height:1.4;">
-          Personnalisez la carte, vos enceintes ou vos stations de radios.
+          Personnalisez la connexion Jellyfin, vos enceintes, vos catégories et l'intégration Spotify.
         </p>
 
+        <!-- JELLYFIN SERVER -->
+        <div style="border: 1px solid var(--divider-color, rgba(255,255,255,0.1)); border-radius: 8px; padding: 12px; margin-bottom: 14px; background: rgba(255,255,255,0.02);">
+          <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">📡 Serveur Jellyfin</div>
+          <div style="margin-bottom: 10px;">
+            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">URL Jellyfin (HTTPS)</label>
+            <input id="cfg-jellyfin-url" type="text" value="${this._config.jellyfin_url || ''}" placeholder="https://jelly.votredomaine.fr" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
+          </div>
+          <div style="margin-bottom: 10px;">
+            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">Clé d'API Jellyfin (Token)</label>
+            <input id="cfg-jellyfin-token" type="password" value="${this._config.jellyfin_token || ''}" placeholder="Votre clé d'API Jellyfin" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">Nom d'invocation du skill Alexa</label>
+            <input id="cfg-skill-invocation" type="text" value="${this._config.skill_invocation || ''}" placeholder="mon nas (ex: demande à <mon nas> de jouer...)" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
+          </div>
+        </div>
+
+        <!-- ENCEINTE PAR DÉFAUT -->
         <div style="margin-bottom:14px;">
           <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">
             Enceinte par défaut (ID Home Assistant)
@@ -5975,87 +6097,94 @@ class NasMusicCardEditor extends HTMLElement {
           <input id="cfg-speaker" type="text" value="${this._config.default_speaker || ''}" placeholder="media_player.echo_chambre" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
         </div>
 
-        <div style="margin-bottom:14px;">
-          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">
-            🔗 Vue ou URL de redirection vers le lecteur complet
-          </label>
-          <input id="cfg-player-url" type="text" list="cfg-views-list" value="${this._config.player_url || ''}" placeholder="/lovelace/multimedias" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
-          <datalist id="cfg-views-list">
-            <option value="/lovelace/multimedias">Multimedias</option>
-            <option value="/lovelace/multimedias-test">Multimédias Test</option>
-            <option value="/lovelace/musique">Musique</option>
-            <option value="/lovelace/0">Vue principale</option>
-          </datalist>
-          <div style="font-size:11px;color:var(--secondary-text-color);margin-top:4px;line-height:1.35;">
-            Chemin ouvert lors du clic sur « 🎶 Changer de titre » ou sur la pochette (ex: <code>/lovelace/multimedias</code>). Si le lecteur est déjà présent sur la même vue, l'écran défilera directement jusqu'à lui.
+        <!-- SPOTIFY OPTIONNEL -->
+        <div style="border: 1px solid var(--divider-color, rgba(255,255,255,0.1)); border-radius: 8px; padding: 12px; margin-bottom: 14px; background: rgba(255,255,255,0.02);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <span style="font-size: 13px; font-weight: 600;">🟢 Intégration Spotify</span>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+              <input id="cfg-show-spotify" type="checkbox" ${isSpotify ? 'checked' : ''}>
+              Activer Spotify
+            </label>
+          </div>
+          <div id="spotify-field-wrap" style="${isSpotify ? '' : 'display:none;'}">
+            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">Entité Lecteur Spotify Home Assistant</label>
+            <input id="cfg-spotify-player" type="text" value="${this._config.spotify_player || ''}" placeholder="media_player.spotifyplus_utilisateur" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
           </div>
         </div>
 
+        <!-- FOURNISSEUR RADIO -->
         <div style="margin-bottom:14px;">
           <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">
             Fournisseur Radio sur Amazon Echo
           </label>
           <select id="cfg-radio-provider" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
-            <option value="radioplayer" ${(!this._config.radio_provider || this._config.radio_provider === 'radioplayer') ? 'selected' : ''}>📻 Radioplayer France (Officiel, sans pub TuneIn)</option>
-            <option value="tunein" ${this._config.radio_provider === 'tunein' ? 'selected' : ''}>📡 TuneIn (Standard avec pubs)</option>
+            <option value="audioplayer" ${(!this._config.radio_provider || this._config.radio_provider === 'audioplayer') ? 'selected' : ''}>📻 Audio Player (Recommandé)</option>
+            <option value="tunein" ${this._config.radio_provider === 'tunein' ? 'selected' : ''}>📡 TuneIn</option>
+            <option value="radioplayer" ${this._config.radio_provider === 'radioplayer' ? 'selected' : ''}>🇫🇷 Radioplayer France</option>
           </select>
         </div>
 
+        <!-- EXPLICATION CATEGORIES / DOSSIERS EN YAML -->
         <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:12px;line-height:1.5;">
-          <strong>📻 Gestion des stations de radios :</strong><br>
-          • Directement dans la carte : cliquez sur l'onglet <strong>📻 Radios</strong> puis sur le bouton <strong>⚙️ Gérer les radios</strong> pour ajouter, modifier ou supprimer des stations graphiquement.<br>
-          • En YAML : vous pouvez définir la clé <code>radios:</code> pour fixer la liste pour tous les utilisateurs.
+          <strong>📁 Personnalisation des onglets et dossiers musicaux :</strong><br>
+          Par défaut, la carte affiche automatiquement <strong>Favoris</strong>, <strong>Tous les Albums</strong> et <strong>Playlists</strong>.<br>
+          Pour ajouter vos propres dossiers/catégories Jellyfin (ex: Compilations, Rock, Pop), ajoutez en mode YAML :
+          <pre style="background:rgba(0,0,0,0.4);padding:8px;border-radius:4px;overflow-x:auto;font-size:11px;margin:8px 0 0 0;">categories:
+  - id: "favorites"
+    label: "⭐ Favoris"
+    type: "favorites"
+  - id: "albums"
+    label: "💿 Tous les Albums"
+    type: "jellyfin"
+    itemTypes: "MusicAlbum"
+  - id: "compilations"
+    label: "📁 Compilations"
+    type: "jellyfin"
+    parentId: "ID_DOSSIER_JELLYFIN"
+    itemTypes: "MusicAlbum"</pre>
+          <div style="font-size:11px;color:var(--secondary-text-color);margin-top:6px;">
+            💡 <em>Astuce : pour trouver l'ID d'un dossier dans Jellyfin, cliquez dessus dans l'interface web et copiez l'identifiant après <code>?id=</code> dans la barre d'adresse.</em>
+          </div>
         </div>
       </div>
     `;
 
-    const input = this.querySelector("#cfg-speaker");
-    if (input) {
-      input.onchange = (e) => {
-        const val = e.target.value.trim();
-        const newConfig = { ...this._config };
-        if (val) {
-          newConfig.default_speaker = val;
-        } else {
-          delete newConfig.default_speaker;
-        }
-        const event = new CustomEvent("config-changed", {
-          detail: { config: newConfig },
-          bubbles: true,
-          composed: true
-        });
-        this.dispatchEvent(event);
-      };
-    }
+    // Listeners
+    const bindInput = (id, prop) => {
+      const el = this.querySelector(id);
+      if (el) {
+        el.onchange = (e) => {
+          const val = e.target.value.trim();
+          const newCfg = { ...this._config };
+          if (val) newCfg[prop] = val;
+          else delete newCfg[prop];
+          this._notifyChange(newCfg);
+        };
+      }
+    };
 
-    const inputUrl = this.querySelector("#cfg-player-url");
-    if (inputUrl) {
-      inputUrl.onchange = (e) => {
-        const val = e.target.value.trim();
-        const newConfig = { ...this._config };
-        if (val) {
-          newConfig.player_url = val;
-        } else {
-          delete newConfig.player_url;
-        }
-        this.dispatchEvent(new CustomEvent("config-changed", {
-          detail: { config: newConfig },
-          bubbles: true,
-          composed: true
-        }));
+    bindInput("#cfg-jellyfin-url", "jellyfin_url");
+    bindInput("#cfg-jellyfin-token", "jellyfin_token");
+    bindInput("#cfg-skill-invocation", "skill_invocation");
+    bindInput("#cfg-speaker", "default_speaker");
+    bindInput("#cfg-spotify-player", "spotify_player");
+
+    const chkSpotify = this.querySelector("#cfg-show-spotify");
+    const spWrap = this.querySelector("#spotify-field-wrap");
+    if (chkSpotify) {
+      chkSpotify.onchange = (e) => {
+        const checked = e.target.checked;
+        if (spWrap) spWrap.style.display = checked ? "" : "none";
+        const newCfg = { ...this._config, show_spotify: checked };
+        if (!checked) delete newCfg.spotify_player;
+        this._notifyChange(newCfg);
       };
     }
 
     const selRadio = this.querySelector("#cfg-radio-provider");
     if (selRadio) {
       selRadio.onchange = (e) => {
-        const val = e.target.value;
-        const newConfig = { ...this._config, radio_provider: val };
-        this.dispatchEvent(new CustomEvent("config-changed", {
-          detail: { config: newConfig },
-          bubbles: true,
-          composed: true
-        }));
+        this._notifyChange({ ...this._config, radio_provider: e.target.value });
       };
     }
   }
@@ -6244,7 +6373,7 @@ class NasMusicControlCard extends HTMLElement {
     // 3. Spotify check : Actif uniquement si le NAS n'est PAS en train de jouer et que Spotify cible cette enceinte
     const isNasActivelyPlaying = isPlaying || (nasSensor && nasSensor.state === "playing");
     if (!isNasActivelyPlaying && !isLocal) {
-      const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
+      const spotifyEntity = this._config?.spotify_player || null;
       const spState = this._hass?.states?.[spotifyEntity];
       const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === speakerId);
       const isTargetOfSpotify = (
@@ -6660,7 +6789,7 @@ class NasMusicControlCard extends HTMLElement {
           this.updateCard();
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
+        const spotifyEntity = this._config?.spotify_player || null;
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);
@@ -6698,7 +6827,7 @@ class NasMusicControlCard extends HTMLElement {
           window.dispatchEvent(new CustomEvent("nas-music-remote-next"));
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
+        const spotifyEntity = this._config?.spotify_player || null;
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);
@@ -6724,7 +6853,7 @@ class NasMusicControlCard extends HTMLElement {
           window.dispatchEvent(new CustomEvent("nas-music-remote-prev"));
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
+        const spotifyEntity = this._config?.spotify_player || null;
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);
@@ -6751,7 +6880,7 @@ class NasMusicControlCard extends HTMLElement {
           window._nasMusicLocalAudio.currentTime = pos;
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
+        const spotifyEntity = this._config?.spotify_player || null;
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);

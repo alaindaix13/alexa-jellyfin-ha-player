@@ -1,38 +1,93 @@
-# Exemple de configuration de la carte Lovelace dans votre dashboard Home Assistant
-
+# ==============================================================================
+# Exemple 1 : Configuration Complète avec Dossiers/Catégories Personnalisés
+# ==============================================================================
 type: custom:nas-music-player-card
 
-# URL publique HTTPS de votre serveur Jellyfin (sans slash final)
+# URL publique HTTPS de votre serveur Jellyfin (obligatoire)
 jellyfin_url: "https://jelly.votredomaine.fr"
 
 # Clé API Jellyfin générée dans : Tableau de bord Jellyfin > Avancé > Clés d'API
 jellyfin_token: "votre_cle_api_jellyfin"
 
+# Nom d'invocation vocal configuré sur Alexa (défaut: "mon nas")
+skill_invocation: "mon nas"
+
 # Enceinte par défaut sélectionnée à l'ouverture de la carte
 default_speaker: media_player.echo_salon
 
-# Lecteur Spotify optionnel (Spotify officiel ou composant SpotifyPlus)
-spotify_player: media_player.spotifyplus_utilisateur
+# Spotify (optionnel) : Mettre show_spotify à false ou omettre spotify_player si vous n'utilisez pas Spotify
+show_spotify: false
+# spotify_player: media_player.spotifyplus_utilisateur
 
-# Liste personnalisée de vos enceintes et zones
+# ------------------------------------------------------------------------------
+# Onglets & Catégories Personnalisés :
+# ------------------------------------------------------------------------------
+# Vous pouvez définir vos propres dossiers / bibliothèques musicales ici !
+# Pour trouver le "parentId" d'un dossier dans Jellyfin :
+# 1. Ouvrez Jellyfin dans votre navigateur web
+# 2. Cliquez sur votre dossier/bibliothèque (ex: Compilations, Rock...)
+# 3. Regardez l'URL dans la barre d'adresse : "...?id=91dee17855cfbed5eaab9fd7aaed6566"
+#    La valeur après "?id=" est votre parentId !
+# ------------------------------------------------------------------------------
+categories:
+  - id: "favorites"
+    label: "⭐ Favoris"
+    type: "favorites"
+
+  - id: "albums"
+    label: "💿 Tous les Albums"
+    type: "jellyfin"
+    itemTypes: "MusicAlbum"
+
+  - id: "compilations"
+    label: "📁 Compilations"
+    type: "jellyfin"
+    parentId: "votre_id_de_dossier_compilations"
+    itemTypes: "MusicAlbum"
+
+  - id: "rock"
+    label: "🎸 Rock"
+    type: "jellyfin"
+    parentId: "votre_id_de_dossier_rock"
+    itemTypes: "MusicAlbum"
+
+  - id: "playlists"
+    label: "📑 Playlists"
+    type: "jellyfin"
+    itemTypes: "Playlist"
+
+  - id: "radios"
+    label: "📻 Radios"
+    type: "radios"
+
+# ------------------------------------------------------------------------------
+# Vos Enceintes (Amazon Echo, DLNA, etc.)
+# ------------------------------------------------------------------------------
 speakers:
   - id: media_player.echo_salon
     name: "Echo Salon"
     zone: "Salon"
     icon: "🛋️"
     isAlexa: true
-    spotifyDevice: "Echo Salon"
 
   - id: media_player.echo_chambre
     name: "Echo Chambre"
     zone: "Chambre"
     icon: "🛏️"
     isAlexa: true
-    spotifyDevice: "Echo Chambre"
 
-  - id: media_player.enceinte_cuisine_dlna
-    name: "Enceinte Cuisine"
+  - id: media_player.enceinte_cuisine
+    name: "Cuisine (DLNA)"
     zone: "Cuisine"
     icon: "🍳"
     isAlexa: false
     isDlna: true
+
+# ==============================================================================
+# Exemple 2 : Configuration Minimale (Auto-découverte sans dossiers spécifiques)
+# ==============================================================================
+# type: custom:nas-music-player-card
+# jellyfin_url: "https://jelly.votredomaine.fr"
+# jellyfin_token: "votre_cle_api_jellyfin"
+# default_speaker: media_player.echo_salon
+# (Dans ce mode minimal, la carte affiche automatiquement : Favoris, Tous les Albums, Playlists et Radios)
