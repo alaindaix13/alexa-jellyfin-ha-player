@@ -1,0 +1,272 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "mon nas",
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent"
+        },
+        {
+          "name": "AMAZON.HelpIntent"
+        },
+        {
+          "name": "AMAZON.StopIntent"
+        },
+        {
+          "name": "AMAZON.FallbackIntent"
+        },
+        {
+          "name": "AMAZON.PauseIntent"
+        },
+        {
+          "name": "AMAZON.ResumeIntent"
+        },
+        {
+          "name": "AMAZON.NextIntent"
+        },
+        {
+          "name": "AMAZON.PreviousIntent"
+        },
+        {
+          "name": "AMAZON.YesIntent"
+        },
+        {
+          "name": "AMAZON.NoIntent"
+        },
+        {
+          "name": "LoopAllOffIntent",
+          "samples": [
+            "arrête la répétition",
+            "désactive la répétition",
+            "boucle désactivée",
+            "ne répète plus"
+          ]
+        },
+        {
+          "name": "LoopAllOnIntent",
+          "samples": [
+            "active la répétition",
+            "mets en boucle",
+            "répète en boucle",
+            "boucle activée"
+          ]
+        },
+        {
+          "name": "RepeatSingleOnIntent",
+          "samples": [
+            "répète la chanson",
+            "répète le morceau",
+            "rejoue ce titre",
+            "répète ce titre"
+          ]
+        },
+        {
+          "name": "AMAZON.ShuffleOnIntent"
+        },
+        {
+          "name": "AMAZON.ShuffleOffIntent"
+        },
+        {
+          "name": "AMAZON.StartOverIntent",
+          "samples": [
+            "recommence depuis le début",
+            "recommence",
+            "au début"
+          ]
+        },
+        {
+          "name": "PlayChannelIntent",
+          "samples": [
+            "joue la radio {channel}",
+            "joue la chaîne {channel}",
+            "mets la radio {channel}"
+          ],
+          "slots": [
+            {
+              "name": "channel",
+              "type": "AMAZON.SearchQuery"
+            }
+          ]
+        },
+        {
+          "name": "PlaySongIntent",
+          "samples": [
+            "joue la chanson {song}",
+            "joue la chanson {song} de {musician}",
+            "joue le titre {song}",
+            "joue le titre {song} de {musician}",
+            "joue le morceau {song}",
+            "joue le morceau {song} de {musician}",
+            "joue {song}",
+            "joue {song} de {musician}",
+            "mets la chanson {song}",
+            "lance la chanson {song}"
+          ],
+          "slots": [
+            {
+              "name": "song",
+              "type": "AMAZON.MusicRecording"
+            },
+            {
+              "name": "musician",
+              "type": "AMAZON.Musician"
+            }
+          ]
+        },
+        {
+          "name": "PlayAlbumIntent",
+          "samples": [
+            "joue l'album {album}",
+            "joue l'album {album} de {musician}",
+            "mets l'album {album}",
+            "lance l'album {album}",
+            "l'album {album}"
+          ],
+          "slots": [
+            {
+              "name": "album",
+              "type": "AMAZON.MusicRecording"
+            },
+            {
+              "name": "musician",
+              "type": "AMAZON.Musician"
+            }
+          ]
+        },
+        {
+          "name": "PlayVideoIntent",
+          "samples": [
+            "joue la vidéo {title}",
+            "lance la vidéo {title}"
+          ],
+          "slots": [
+            {
+              "name": "title",
+              "type": "AMAZON.SearchQuery"
+            }
+          ]
+        },
+        {
+          "name": "PlayArtistSongsIntent",
+          "samples": [
+            "joue des chansons de {musician}",
+            "joue de la musique de {musician}",
+            "joue les titres de {musician}",
+            "joue les morceaux de {musician}",
+            "mets de la musique de {musician}",
+            "joue {musician}",
+            "mets {musician}",
+            "lance {musician}"
+          ],
+          "slots": [
+            {
+              "name": "musician",
+              "type": "AMAZON.Musician"
+            }
+          ]
+        },
+        {
+          "name": "PlayLastAddedIntent",
+          "samples": [
+            "joue les derniers ajouts",
+            "joue les nouveautés",
+            "joue les médias récemment ajoutés"
+          ],
+          "slots": [
+            {
+              "name": "media_type",
+              "type": "MediaType"
+            }
+          ]
+        },
+        {
+          "name": "PlayPlaylistIntent",
+          "samples": [
+            "joue la playlist {playlist}",
+            "joue ma playlist {playlist}",
+            "lance la playlist {playlist}",
+            "mets la playlist {playlist}"
+          ],
+          "slots": [
+            {
+              "name": "playlist",
+              "type": "AMAZON.SearchQuery"
+            }
+          ]
+        },
+        {
+          "name": "PlayFavoritesIntent",
+          "samples": [
+            "joue mes favoris",
+            "lance mes favoris",
+            "joue mes morceaux préférés",
+            "mets mes chansons favorites"
+          ],
+          "slots": [
+            {
+              "name": "media_type",
+              "type": "MediaType"
+            }
+          ]
+        },
+        {
+          "name": "MarkFavoriteIntent",
+          "samples": [
+            "j'aime ce titre",
+            "j'aime cette chanson",
+            "ajoute aux favoris",
+            "mets dans mes favoris"
+          ]
+        },
+        {
+          "name": "UnmarkFavoriteIntent",
+          "samples": [
+            "je n'aime pas ce titre",
+            "retire de mes favoris",
+            "supprime des favoris"
+          ]
+        },
+        {
+          "name": "MediaInfoIntent",
+          "samples": [
+            "quel est ce morceau",
+            "quelle est cette chanson",
+            "quel est le titre de cette musique",
+            "qu'est-ce qui passe",
+            "qui chante"
+          ]
+        }
+      ],
+      "types": [
+        {
+          "name": "MediaType",
+          "values": [
+            {
+              "id": "media",
+              "name": {
+                "value": "média"
+              }
+            },
+            {
+              "id": "video",
+              "name": {
+                "value": "vidéo"
+              }
+            },
+            {
+              "id": "audio",
+              "name": {
+                "value": "audio",
+                "synonyms": [
+                  "musique",
+                  "chanson",
+                  "titre"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,38 @@
+# Exemple de configuration de la carte Lovelace dans votre dashboard Home Assistant
+
+type: custom:nas-music-player-card
+
+# URL publique HTTPS de votre serveur Jellyfin (sans slash final)
+jellyfin_url: "https://jelly.votredomaine.fr"
+
+# Clé API Jellyfin générée dans : Tableau de bord Jellyfin > Avancé > Clés d'API
+jellyfin_token: "votre_cle_api_jellyfin"
+
+# Enceinte par défaut sélectionnée à l'ouverture de la carte
+default_speaker: media_player.echo_salon
+
+# Lecteur Spotify optionnel (Spotify officiel ou composant SpotifyPlus)
+spotify_player: media_player.spotifyplus_utilisateur
+
+# Liste personnalisée de vos enceintes et zones
+speakers:
+  - id: media_player.echo_salon
+    name: "Echo Salon"
+    zone: "Salon"
+    icon: "🛋️"
+    isAlexa: true
+    spotifyDevice: "Echo Salon"
+
+  - id: media_player.echo_chambre
+    name: "Echo Chambre"
+    zone: "Chambre"
+    icon: "🛏️"
+    isAlexa: true
+    spotifyDevice: "Echo Chambre"
+
+  - id: media_player.enceinte_cuisine_dlna
+    name: "Enceinte Cuisine"
+    zone: "Cuisine"
+    icon: "🍳"
+    isAlexa: false
+    isDlna: true

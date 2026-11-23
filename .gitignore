@@ -1,0 +1,15 @@
+# Fichiers de données et secrets locaux
+data/
+*.log
+certs/
+*.crt
+*.key
+*.pem
+skill.conf
+!skill.conf.example
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

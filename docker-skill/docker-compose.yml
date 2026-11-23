@@ -1,0 +1,20 @@
+services:
+  jellyfin-alexa-skill:
+    build: .
+    image: jellyfin-alexa-skill:fr
+    container_name: jellyfin-alexa-skill
+    restart: unless-stopped
+    command: ["--config", "/skill/config/skill.conf", "--data", "/skill/data"]
+    environment:
+      # Optionnel : synchronisation de l'état de lecture vers Home Assistant
+      - HOMEASSISTANT_URL=http://homeassistant:8123
+      - HOMEASSISTANT_TOKEN=votre_jeton_longue_duree_ha_optionnel
+    volumes:
+      - ./config/skill.conf:/skill/config/skill.conf
+      - ./data:/skill/data
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

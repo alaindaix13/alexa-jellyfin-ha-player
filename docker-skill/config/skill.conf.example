@@ -1,0 +1,37 @@
+[general]
+# ID du Skill créé sur Amazon Developer Console (ex: amzn1.ask.skill.xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+skill_id = amzn1.ask.skill.xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+bind_addr = 0.0.0.0
+web_app_port = 4430
+
+# URL publique HTTPS de votre Jellyfin (doit avoir un certificat SSL valideLet's Encrypt / ZeroSSL)
+jellyfin_endpoint = https://jelly.votredomaine.fr
+
+# URL publique HTTPS de votre endpoint Skill exposé par Nginx
+skill_endpoint = https://alexa.votredomaine.fr
+skill_endpoint_ssl_cert_type = trusted
+
+[jellyfin]
+# Utilisateur Jellyfin dédié avec accès à votre bibliothèque musicale
+user = alexa
+password = votre_mot_de_passe_jellyfin
+
+[smapi]
+# Identifiants LWA (Login with Amazon) depuis developer.amazon.com
+client_id = amzn1.application-oa2-client.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+client_secret = amzn1.oa2-cs.v1.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Token généré via la commande : ask util generate-lwa-tokens
+refresh_token = Atzr|IwEB...votre_refresh_token_smapi...
+
+[data]
+# Clé aléatoire générée (ex: openssl rand -hex 32)
+flask_secret = a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0
+alexa_account_linking_client_id = 58a15c95-0b70-40e8-b107-36d8ac6d6746
+
+[locales]
+locales = fr-FR
+
+[fr-FR]
+# Nom d'invocation prononcé : "Alexa, demande à <invocation_name> de..."
+invocation_name = mon nas
+display_name = Mon NAS
