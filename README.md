@@ -231,10 +231,13 @@ speakers:
 
 ## 🎯 Fonctionnalités Clés incluses
 
-- 🎤 **Commandes Vocales en Français** :
+- 🎤 **Commandes Vocales en Français & Normalisation Avancée** :
   - *"Alexa, demande à mon nas de jouer Queen"*
-  - *"Alexa, demande à mon nas de jouer l'album 70s"* (conversion phonétique intégrée)
+  - *"Alexa, demande à mon nas de jouer l'album 70s"* (conversion phonétique intégrée des décennies "soixante-dix" -> 70s et des nombres français)
   - *"Alexa, pause / suivant / précédent"*
+- 🔄 **Synchronisation Bidirectionnelle Skill ➔ Home Assistant** :
+  - Remontée en temps réel du titre en cours, de l'artiste et de l'ID de piste via le capteur `sensor.nas_music_now_playing`.
+  - Mise à jour automatique de la pochette, du curseur de lecture et de la position dans la file d'attente lorsque l'Echo passe au titre suivant.
 - 📱 **Interface Tactile Lovelace Complète** :
   - Navigation par Albums, Artistes, Favoris, Playlists et dossiers sur mesure.
   - Paroles karaoké synchronisées en temps réel (fichiers `.lrc` Jellyfin ou base mondiale LRCLIB).

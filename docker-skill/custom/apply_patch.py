@@ -588,10 +588,23 @@ if old_event_handler in event_code:
 
 ha_notify_code = """import os, urllib.request, json, threading
 
-HA_URL = os.environ.get("HOMEASSISTANT_URL", "http://homeassistant:8123")
+HA_URL = os.environ.get("HOMEASSISTANT_URL", "http://172.17.0.1:8124")
 HA_TOKEN = os.environ.get("HOMEASSISTANT_TOKEN", "")
+if not HA_TOKEN and os.path.exists("/skill/data/ha.key"):
+    try:
+        with open("/skill/data/ha.key", "r") as f:
+            HA_TOKEN = f.read().strip()
+    except Exception:
+        pass
 
 def notify_ha_playback(state, item=None):
+    global HA_TOKEN
+    if not HA_TOKEN and os.path.exists("/skill/data/ha.key"):
+        try:
+            with open("/skill/data/ha.key", "r") as f:
+                HA_TOKEN = f.read().strip()
+        except Exception:
+            pass
     if not HA_TOKEN:
         return
     def _do():
@@ -630,10 +643,23 @@ if "def notify_ha_playback" not in u_code:
 if "notify_ha_playback" not in event_code:
     ha_notify_code = """import os, urllib.request, json, threading
 
-HA_URL = os.environ.get("HOMEASSISTANT_URL", "http://homeassistant:8123")
+HA_URL = os.environ.get("HOMEASSISTANT_URL", "http://172.17.0.1:8124")
 HA_TOKEN = os.environ.get("HOMEASSISTANT_TOKEN", "")
+if not HA_TOKEN and os.path.exists("/skill/data/ha.key"):
+    try:
+        with open("/skill/data/ha.key", "r") as f:
+            HA_TOKEN = f.read().strip()
+    except Exception:
+        pass
 
 def notify_ha_playback(state, item=None):
+    global HA_TOKEN
+    if not HA_TOKEN and os.path.exists("/skill/data/ha.key"):
+        try:
+            with open("/skill/data/ha.key", "r") as f:
+                HA_TOKEN = f.read().strip()
+        except Exception:
+            pass
     if not HA_TOKEN:
         return
     def _do():
@@ -665,10 +691,20 @@ def notify_ha_playback(state, item=None):
     new_start = """        playback = get_playback(user_id)
         playback.playing = True
         playback.offset = 0
+        token = getattr(handler_input.request_envelope.request, "token", None)
+        item = None
+        if token and playback.queue:
+            for idx, q_item in enumerate(playback.queue):
+                if str(q_item.get("id")) == str(token):
+                    playback.current_idx = idx
+                    item = q_item
+                    break
+        if not item and playback.queue and 0 <= playback.current_idx < len(playback.queue):
+            item = playback.queue[playback.current_idx]
         playback.save()
 
-        if playback.queue and 0 <= playback.current_idx < len(playback.queue):
-            notify_ha_playback("playing", playback.queue[playback.current_idx])
+        if item:
+            notify_ha_playback("playing", item)
 
         return handler_input.response_builder.response"""
 

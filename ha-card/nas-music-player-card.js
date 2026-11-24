@@ -10,9 +10,9 @@
  * - Auto-fallback & filtering to ensure 100% cover art and full tracklist display
  */
 
-const JELLYFIN_URL = "https://jelly.votredomaine.fr";
-const JELLYFIN_USER = "";
-const JELLYFIN_TOKEN = "";
+const JELLYFIN_URL = "https://jelly.alaindaix.fr";
+const JELLYFIN_USER = "1b534563ad8e4886abe14ab4a29ed6bc";
+const JELLYFIN_TOKEN = "a06ee992908547feb6d284458eb11493";
 const AUTH_HEADER = `MediaBrowser Client="Alexa", Device="Echo", DeviceId="test", Version="0.3.1", Token="${JELLYFIN_TOKEN}"`;
 
 const DEFAULT_SPEAKERS = [
@@ -107,13 +107,18 @@ function normalizeLookalikes(str) {
     .replace(/\u0445/g, "x");
 }
 
-function buildVoiceCmd(item, invocation = "mon nas") {
+function buildVoiceCmd(item) {
   let title = (item.Name || item.name || "").trim();
   let artist = (item.AlbumArtist || item.artist || (item.Artists && item.Artists[0]) || "").trim();
 
   // Normalize Cyrillic lookalikes
   title = normalizeLookalikes(title);
   artist = normalizeLookalikes(artist);
+
+  // If artist has multiple artists (e.g. "Miley Cyrus; Dua Lipa" or "Miley Cyrus, Dua Lipa" or "Miley Cyrus feat..."), keep only primary artist
+  if (artist) {
+    artist = artist.split(/[,;]|\bfeat\b|\bft\b/i)[0].trim();
+  }
 
   // If "Artist - Album", extract both
   if (title.includes(" - ")) {
@@ -129,24 +134,26 @@ function buildVoiceCmd(item, invocation = "mon nas") {
   // Remove year prefix like "1975 - " or "2016 - "
   title = title.replace(/^\d{4}\s*-\s*/, "").trim();
 
-  // Clean brackets and special chars
-  title = title.replace(/[\[\]()"]/g, "").replace(/\s+/g, " ").trim();
-  artist = artist.replace(/[\[\]()"]/g, "").replace(/\s+/g, " ").trim();
+  // Clean version suffixes in parentheses/brackets e.g. "(Deluxe Version)", "[Deluxe Edition]", "(Remastered 2011)"
+  title = title.replace(/\s*[\(\[](?:deluxe|version\s+deluxe|edition\s+deluxe|remaster(?:ed)?|bonus|expanded|anniversary|collector).*?[\)\]]/gi, "").trim();
+
+  // Clean brackets, colons, quotes and special chars
+  title = title.replace(/[\[\]()":]/g, " ").replace(/\s+/g, " ").trim();
+  artist = artist.replace(/[\[\]()":]/g, " ").replace(/\s+/g, " ").trim();
 
   // Clean ampersands so Alexa text/speech and SSML does not fail
-  title = title.replace(/&/g, " and ").replace(/\s+/g, " ").trim();
-  artist = artist.replace(/&/g, " and ").replace(/\s+/g, " ").trim();
+  title = title.replace(/&/g, " et ").replace(/\s+/g, " ").trim();
+  artist = artist.replace(/&/g, " et ").replace(/\s+/g, " ").trim();
 
-  const inv = invocation || "mon nas";
   if (item.Type === "Playlist") {
-    return `demande à ${inv} de jouer la playlist ${title}`;
+    return `demande à mon nas de jouer la playlist ${title}`;
   }
 
   const isVarious = !artist || /various|compilation|plusieurs/i.test(artist);
   if (isVarious) {
-    return `demande à ${inv} de jouer l'album ${title}`;
+    return `demande à mon nas de jouer l'album ${title}`;
   }
-  return `demande à ${inv} de jouer l'album ${title} de ${artist}`;
+  return `demande à mon nas de jouer l'album ${title} de ${artist}`;
 }
 
 class NasMusicCard extends HTMLElement {
@@ -335,6 +342,17 @@ class NasMusicCard extends HTMLElement {
       if (savedRadio) this._lastPlayedRadio = JSON.parse(savedRadio);
     } catch(e) {}
     this._lastPlayedTrack = null;
+    this.currentNowPlaying = null;
+    try {
+      const storedMeta = localStorage.getItem("nas_music_active_meta");
+      if (storedMeta) {
+        const parsed = JSON.parse(storedMeta);
+        if (parsed?.title) {
+          this.currentNowPlaying = parsed;
+          this.isPlayingLocal = true;
+        }
+      }
+    } catch(e) {}
     // Spotify state & subtabs
     this.spotifySubTab = "playlists"; // "playlists", "albums", "artists", "top"
     this.spotifyPlaylists = [];
@@ -349,44 +367,22 @@ class NasMusicCard extends HTMLElement {
     // Speaker manager state
     this.showSpeakerManager = false;
     this.selectedSpeakersMulti = new Set();
+    try {
+      const savedMulti = localStorage.getItem("nas_music_multi_speakers");
+      if (savedMulti) {
+        const arr = JSON.parse(savedMulti);
+        if (Array.isArray(arr) && arr.length > 1) {
+          this.selectedSpeakersMulti = new Set(arr);
+        }
+      }
+    } catch(e) {}
     // Lyrics & duration sync offset (in seconds)
     this.syncOffset = parseFloat(localStorage.getItem("nas_music_sync_offset") || "0") || 0;
   }
 
-  get skillInvocation() {
-    return this._config?.skill_invocation || "mon nas";
-  }
-  isSpotifyEnabled() {
-    return Boolean(this._config?.spotify_player) && this._config?.show_spotify !== false;
-  }
-  get spotifyPlayer() {
-    if (this._config?.spotify_player) return this._config.spotify_player;
-    if (this._config?.show_spotify === false) return null;
-    if (this.jellyfinUrl.includes("alaindaix.fr")) return "media_player.spotifyplus_alaindaix";
-    return null;
-  }
   getSpeakers() {
     if (Array.isArray(this._config?.speakers) && this._config.speakers.length > 0) {
       return this._config.speakers;
-    }
-    // Auto-détection des media_players disponibles dans HA si non configurés
-    if (this._hass?.states) {
-      const detected = [];
-      for (const [id, st] of Object.entries(this._hass.states)) {
-        if (id.startsWith("media_player.") && !id.includes("spotify") && !id.includes("browser_mod")) {
-          const isAlexa = id.includes("echo") || id.includes("chambre") || id.includes("salon") || Boolean(st.attributes?.available);
-          const isDlna = id.includes("dlna") || id.includes("sonoro");
-          detected.push({
-            id: id,
-            name: st.attributes?.friendly_name || id.replace("media_player.", ""),
-            zone: st.attributes?.friendly_name || "Général",
-            isAlexa: isAlexa,
-            isDlna: !isAlexa && isDlna,
-            icon: isAlexa ? "🔊" : "📻"
-          });
-        }
-      }
-      if (detected.length > 0) return detected;
     }
     return DEFAULT_SPEAKERS;
   }
@@ -394,7 +390,7 @@ class NasMusicCard extends HTMLElement {
     return (this._config?.jellyfin_url || JELLYFIN_URL).replace(/\/+$/, "");
   }
   get jellyfinUser() {
-    return this._config?.jellyfin_user || this._detectedUserId || JELLYFIN_USER;
+    return this._config?.jellyfin_user || JELLYFIN_USER;
   }
   get jellyfinToken() {
     return this._config?.jellyfin_token || JELLYFIN_TOKEN;
@@ -403,66 +399,11 @@ class NasMusicCard extends HTMLElement {
     const token = this.jellyfinToken;
     return `MediaBrowser Client="Alexa", Device="Echo", DeviceId="test", Version="0.3.1", Token="${token}"`;
   }
+  get spotifyPlayer() {
+    return this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
+  }
   get radioProvider() {
     return this._config?.radio_provider || "tunein";
-  }
-
-  getCategories() {
-    // 1. Catégories personnalisées via configuration YAML ou Editeur
-    if (Array.isArray(this._config?.categories) && this._config.categories.length > 0) {
-      const cats = {};
-      for (const c of this._config.categories) {
-        cats[c.id] = {
-          id: c.id,
-          label: c.label || c.name || c.id,
-          type: c.type || "jellyfin",
-          parentId: c.parentId || null,
-          itemTypes: c.itemTypes || (c.type === "playlists" ? "Playlist" : "MusicAlbum")
-        };
-      }
-      if (this.isSpotifyEnabled() && !cats.spotify) {
-        cats.spotify = { id: "spotify", label: "🟢 Spotify", type: "spotify" };
-      }
-      if (!cats.nowplaying) {
-        cats.nowplaying = { id: "nowplaying", label: "▶ En lecture", type: "nowplaying" };
-      }
-      return cats;
-    }
-
-    // 2. Rétro-compatibilité pour Alain Daix (si non configuré et sur son domaine)
-    if (this.jellyfinUrl.includes("alaindaix.fr")) {
-      const alainCats = {
-        favorites: { id: "favorites", label: "⭐ Favoris", type: "favorites" },
-        compilations: { id: "compilations", label: "📁 Compilations", type: "jellyfin", parentId: "91dee17855cfbed5eaab9fd7aaed6566", itemTypes: "MusicAlbum" },
-        international: { id: "international", label: "🌍 International", type: "jellyfin", parentId: "3ba5494bda5a2b42d7cb341bc2cb8f58", itemTypes: "MusicAlbum" },
-        variete: { id: "variete", label: "🇫🇷 Français", type: "jellyfin", parentId: "7b119c236676d5b7fff4206fee589f8b", itemTypes: "MusicAlbum" },
-        classique: { id: "classique", label: "🎻 Classique", type: "jellyfin", parentId: "f59fccdb979c9f8659af94f76dad3e85", itemTypes: "MusicAlbum" },
-        radios: { id: "radios", label: "📻 Radios", type: "radios" }
-      };
-      if (this.isSpotifyEnabled()) {
-        alainCats.spotify = { id: "spotify", label: "🟢 Spotify", type: "spotify" };
-      }
-      alainCats.nowplaying = { id: "nowplaying", label: "▶ En lecture", type: "nowplaying" };
-      return alainCats;
-    }
-
-    // 3. Catégories génériques universelles (fonctionne immédiatement avec tout Jellyfin)
-    const universalCats = {
-      favorites: { id: "favorites", label: "⭐ Favoris", type: "favorites" },
-      albums: { id: "albums", label: "💿 Tous les Albums", type: "jellyfin", itemTypes: "MusicAlbum" },
-      playlists: { id: "playlists", label: "📑 Playlists", type: "jellyfin", itemTypes: "Playlist" }
-    };
-
-    if (this._config?.show_radios !== false) {
-      universalCats.radios = { id: "radios", label: "📻 Radios", type: "radios" };
-    }
-
-    if (this.isSpotifyEnabled()) {
-      universalCats.spotify = { id: "spotify", label: "🟢 Spotify", type: "spotify" };
-    }
-
-    universalCats.nowplaying = { id: "nowplaying", label: "▶ En lecture", type: "nowplaying" };
-    return universalCats;
   }
 
 
@@ -474,7 +415,7 @@ class NasMusicCard extends HTMLElement {
     }
 
     // Détection automatique : Si Spotify commence à jouer alors que le NAS ou le Système Audio tournait
-    const spState = this.spotifyPlayer ? hass.states?.[this.spotifyPlayer] : null;
+    const spState = hass.states?.[this.spotifyPlayer];
     const speaker = hass.states?.[this.selectedSpeaker];
     const isSpotifyPlaying = (spState?.state === "playing") || (speaker?.state === "playing" && speaker?.attributes?.app_name === "Spotify");
     if (isSpotifyPlaying) {
@@ -558,6 +499,21 @@ class NasMusicCard extends HTMLElement {
     const info = this.getNowPlayingInfo();
     if (!info.isPlaying) return;
 
+    // Si on est sur une enceinte Alexa et qu'une erreur de skill est détectée, arrêter immédiatement la lecture locale
+    if (this.isAlexaSpeaker() && this.isPlayingLocal) {
+      const sp = this._hass.states?.[this.selectedSpeaker];
+      if (sp) {
+        const resp = (sp.attributes?.last_called_response || "").toLowerCase();
+        if (resp && (resp.includes("pas fourni de réponse") || resp.includes("problème") || resp.includes("erreur"))) {
+          this.isPlayingLocal = false;
+          this._localPlayStart = 0;
+          this.updateNowPlayingUI();
+          this.render();
+          return;
+        }
+      }
+    }
+
     const curPos = this.getCurrentPlaybackPosition();
     const duration = info.duration || 0;
 
@@ -584,6 +540,36 @@ class NasMusicCard extends HTMLElement {
             this.castTrack(nextTrack, albumObj);
             return;
           }
+        }
+      }
+    } else if (this.isAlexaSpeaker()) {
+      if (duration > 0 && curPos >= (duration + 1) && this.isPlayingLocal && this.nowPlayingQueue?.length > 0) {
+        const nextIdx = (this.nowPlayingCurrentIndex || 0) + 1;
+        if (nextIdx < this.nowPlayingQueue.length) {
+          const nextTrack = this.nowPlayingQueue[nextIdx];
+          this.nowPlayingCurrentIndex = nextIdx;
+          let trackArtist = (Array.isArray(nextTrack.Artists) ? (nextTrack.Artists[0]?.Name || nextTrack.Artists[0]) : null)
+            || (nextTrack.ArtistItems && nextTrack.ArtistItems.length > 0 ? nextTrack.ArtistItems[0].Name : null)
+            || nextTrack.AlbumArtist
+            || "";
+          this.currentNowPlaying = {
+            title: nextTrack.Name || nextTrack.name,
+            artist: trackArtist,
+            album: this.selectedAlbum?.Name || this.currentNowPlaying?.album || "",
+            cover: `${this.jellyfinUrl}/Items/${nextTrack.AlbumId || this.selectedAlbum?.Id || nextTrack.Id}/Images/Primary?maxWidth=300`,
+            trackId: nextTrack.Id || nextTrack.id,
+            duration: nextTrack.RunTimeTicks ? Math.floor(nextTrack.RunTimeTicks / 10000000) : 0
+          };
+          this._localPlayStart = Date.now();
+          this._localPlayOffset = 0;
+          this._loadedTrackId = nextTrack.Id || nextTrack.id;
+          this._lastTrackTitle = nextTrack.Name || nextTrack.name;
+          try {
+            localStorage.setItem("nas_music_active_meta", JSON.stringify(this.currentNowPlaying));
+          } catch(e) {}
+          this.loadLyricsForCurrentTrack(this.currentNowPlaying.title, this.currentNowPlaying.artist, this.currentNowPlaying.trackId);
+          this.updateNowPlayingUI();
+          this.renderNowPlayingTab();
         }
       }
     }
@@ -652,11 +638,13 @@ class NasMusicCard extends HTMLElement {
       }
     } else if (speaker) {
       const vol = Math.round((speaker.attributes.volume_level || 0) * 100);
+      const isMulti = this.selectedSpeakersMulti && this.selectedSpeakersMulti.size > 1;
+      const multiCount = isMulti ? this.selectedSpeakersMulti.size : 0;
       if (nameEl) {
         if (info.isPlaying) {
-          nameEl.textContent = `▶ ${info.mediaTitle} — ${info.mediaArtist}`;
+          nameEl.textContent = `▶ ${info.mediaTitle} — ${info.mediaArtist}${isMulti ? ` [📡 Multi (${multiCount})]` : ''}`;
         } else {
-          nameEl.textContent = `⏹ ${speaker.attributes.friendly_name || "En attente"}`;
+          nameEl.textContent = isMulti ? `⏹ Multi-diffusion (${multiCount} enc.)` : `⏹ ${speaker.attributes.friendly_name || "En attente"}`;
         }
       }
       if (volSlider && (this.shadowRoot && this.shadowRoot.activeElement !== volSlider)) {
@@ -785,6 +773,13 @@ class NasMusicCard extends HTMLElement {
       this._seekOverrideTime = 0;
 
       this.loadLyricsForCurrentTrack(title, artist, track.Id);
+
+      if (this.nowPlayingQueue && this.nowPlayingQueue.length > 0) {
+        const idx = this.nowPlayingQueue.findIndex(t => (t.Id || t.id) === track.Id);
+        if (idx !== -1) {
+          this.nowPlayingCurrentIndex = idx;
+        }
+      }
 
       if (track.AlbumId && (this.nowPlayingQueue.length === 0 || this._loadedAlbumId !== track.AlbumId)) {
         this._loadedAlbumId = track.AlbumId;
@@ -1110,7 +1105,7 @@ class NasMusicCard extends HTMLElement {
   }
 
   async loadCategory(catId, page = 0) {
-    const cat = this.getCategories()[catId];
+    const cat = CATEGORIES[catId];
     if (!cat) return;
 
     this.activeCategory = catId;
@@ -1185,10 +1180,7 @@ class NasMusicCard extends HTMLElement {
 
     try {
       const startIndex = page * this.pageSize;
-      const parentParam = cat.parentId ? `ParentId=${cat.parentId}&` : "";
-      const types = cat.itemTypes || "MusicAlbum";
-      const typesParam = `IncludeItemTypes=${types}&`;
-      const url = `${this.jellyfinUrl}/Users/${this.jellyfinUser}/Items?${parentParam}${typesParam}Recursive=True&SortBy=SortName&Limit=${this.pageSize}&StartIndex=${startIndex}&Fields=AlbumArtist,ChildCount,ImageTags`;
+      const url = `${this.jellyfinUrl}/Users/${this.jellyfinUser}/Items?ParentId=${cat.parentId}&IncludeItemTypes=${cat.itemTypes}&Recursive=True&SortBy=SortName&Limit=${this.pageSize}&StartIndex=${startIndex}&Fields=AlbumArtist,ChildCount,ImageTags`;
       const res = await fetch(url, { headers: { "Authorization": this.authHeader } });
       const data = await res.json();
       this.searchResults = data.Items || [];
@@ -1658,7 +1650,7 @@ class NasMusicCard extends HTMLElement {
   isSpotifyActive() {
     if (!this._hass) return false;
     const speaker = this._hass.states?.[this.selectedSpeaker];
-    const spState = this.spotifyPlayer ? this._hass.states?.[this.spotifyPlayer] : null;
+    const spState = this._hass.states?.[this.spotifyPlayer];
     const nasSensor = this._hass.states?.["sensor.nas_music_now_playing"];
     const isLocalSystem = this.isLocalSystemSpeaker();
     const isLocalAudioPlaying = window._nasMusicLocalAudio && !window._nasMusicLocalAudio.paused;
@@ -2208,7 +2200,7 @@ class NasMusicCard extends HTMLElement {
 
     if (isSpotifyActive) {
       const pos = this.getCurrentPlaybackPosition();
-      const spState = this.spotifyPlayer ? this._hass.states?.[this.spotifyPlayer] : null;
+      const spState = this._hass.states?.[this.spotifyPlayer];
       const dur = spState?.attributes?.media_duration || 9999;
       const newPos = Math.max(0, Math.min(dur, pos + seconds));
       this._hass.callService("media_player", "media_seek", {
@@ -2310,7 +2302,10 @@ class NasMusicCard extends HTMLElement {
 
     const itemId = item.Id || item.id;
     const itemName = item.Name || item.name || "";
-    const itemArtist = item.AlbumArtist || item.artist || (item.Artists && item.Artists[0]) || "";
+    let itemArtist = item.AlbumArtist || item.artist || (item.Artists && item.Artists[0]) || "";
+    if (typeof itemArtist === "string" && (itemArtist.includes(";") || itemArtist.includes(","))) {
+      itemArtist = itemArtist.split(/[,;]/)[0].trim();
+    }
     const coverUrl = item.coverUrl || `${this.jellyfinUrl}/Items/${itemId}/Images/Primary?maxWidth=300`;
 
     this.currentNowPlaying = {
@@ -2318,7 +2313,8 @@ class NasMusicCard extends HTMLElement {
       artist: itemArtist,
       album: itemName,
       cover: coverUrl,
-      trackId: itemId
+      trackId: itemId,
+      duration: 0
     };
 
     this.isPlayingLocal = true;
@@ -2344,7 +2340,15 @@ class NasMusicCard extends HTMLElement {
       }
       this.nowPlayingCurrentIndex = 0;
       const first = this.nowPlayingQueue[0];
-      const artist = (Array.isArray(first.Artists) ? first.Artists.join(", ") : first.Artists) || first.AlbumArtist || itemArtist || "";
+      let artist = (Array.isArray(first.Artists) ? (first.Artists[0].Name || first.Artists[0]) : null)
+        || (first.ArtistItems && first.ArtistItems.length > 0 ? first.ArtistItems[0].Name : null)
+        || (first.AlbumArtist && first.AlbumArtist !== "Various Artists" ? first.AlbumArtist : null)
+        || (first.artist && first.artist !== "Various Artists" ? first.artist : null)
+        || itemArtist
+        || "";
+      if (typeof artist === "string" && (artist.includes(";") || artist.includes(","))) {
+        artist = artist.split(/[,;]/)[0].trim();
+      }
       this.currentNowPlaying.title = first.Name || first.name;
       this.currentNowPlaying.artist = artist;
       this.currentNowPlaying.trackId = first.Id || first.id;
@@ -2358,7 +2362,7 @@ class NasMusicCard extends HTMLElement {
       } catch(e) {}
       this.loadLyricsForCurrentTrack(first.Name || first.name, artist, first.Id || first.id);
     } else {
-      this.fetchAlbumTracksAndLyrics(item, shuffle);
+      await this.fetchAlbumTracksAndLyrics(item, shuffle);
     }
 
     this.previousView = this.currentView !== "nowplaying" ? this.currentView : "favorites";
@@ -2429,7 +2433,7 @@ class NasMusicCard extends HTMLElement {
     }
 
     // --- ENCEINTE ALEXA ---
-    const cmd = item.cmd || item.customCmd || buildVoiceCmd(item, this.skillInvocation);
+    const cmd = item.cmd || item.customCmd || buildVoiceCmd(item);
     this.castAlexa(cmd);
     if (shuffle) {
       setTimeout(() => {
@@ -2500,13 +2504,12 @@ class NasMusicCard extends HTMLElement {
 
     if (this.isLocalSystemSpeaker()) {
       const spPlus = this._hass?.states?.[this.spotifyPlayer];
-      const spOfficialId = this._config?.spotify_official_player || (this._hass?.states?.["media_player.spotify_alaindaix"] ? "media_player.spotify_alaindaix" : null);
-      const spOfficial = spOfficialId ? this._hass?.states?.[spOfficialId] : null;
+      const spOfficial = this._hass?.states?.["media_player.spotify_alaindaix"];
       if (spPlus?.state === "playing") {
         this._hass.callService("media_player", "media_pause", { entity_id: this.spotifyPlayer }).catch(() => {});
       }
       if (spOfficial?.state === "playing") {
-        if (spOfficialId) this._hass.callService("media_player", "media_pause", { entity_id: spOfficialId }).catch(() => {});
+        this._hass.callService("media_player", "media_pause", { entity_id: "media_player.spotify_alaindaix" }).catch(() => {});
       }
       if (this._hass?.states?.["media_player.systeme_audio"]?.state === "playing") {
         this._hass.callService("media_player", "media_pause", { entity_id: "media_player.systeme_audio" }).catch(() => {});
@@ -2560,14 +2563,14 @@ class NasMusicCard extends HTMLElement {
     } else {
       const trackName = normalizeLookalikes(trackItem.Name || trackItem.name || "")
         .replace(/^\d+[\s.-]+/, "")
-        .replace(/[\[\]()"]/g, "")
-        .replace(/&/g, " and ")
+        .replace(/[\[\]()":/]/g, " ")
+        .replace(/&/g, " et ")
         .replace(/\s+/g, " ")
         .trim();
       const validArtist = (trackArtist && !/various|compilation|plusieurs|inconnu/i.test(trackArtist))
-        ? normalizeLookalikes(trackArtist).replace(/[\[\]()"]/g, "").replace(/&/g, " and ").trim()
+        ? normalizeLookalikes(trackArtist).replace(/[\[\]()":/]/g, " ").replace(/&/g, " et ").replace(/\s+/g, " ").trim()
         : "";
-      const cmd = `demande à ${this.skillInvocation} de jouer le titre ${trackName}${validArtist ? " de " + validArtist : ""}`;
+      const cmd = `demande à mon nas de jouer le titre ${trackName}${validArtist ? " de " + validArtist : ""}`;
       this.castAlexa(cmd);
     }
   }
@@ -2595,10 +2598,21 @@ class NasMusicCard extends HTMLElement {
     if (spState && (spState.state === "playing" || spState.attributes?.app_name === "Spotify")) {
       this._hass.callService("media_player", "media_stop", { entity_id: this.selectedSpeaker });
     }
-    const spAlainId = this._config?.spotify_official_player || (this._hass?.states?.["media_player.spotify_alaindaix"] ? "media_player.spotify_alaindaix" : null);
-    const spAlain = spAlainId ? this._hass.states?.[spAlainId] : null;
+    if (this.selectedSpeaker !== "media_player.partout") {
+      const partoutState = this._hass.states?.["media_player.partout"];
+      if (partoutState && (partoutState.state === "playing" || partoutState.state === "paused")) {
+        this._hass.callService("media_player", "media_stop", { entity_id: "media_player.partout" });
+      }
+    }
+    if (spState?.attributes?.is_volume_muted) {
+      this._hass.callService("media_player", "volume_mute", { entity_id: this.selectedSpeaker, is_volume_muted: false });
+    }
+    if (spState?.attributes?.volume_level !== undefined && spState.attributes.volume_level <= 0.05) {
+      this._hass.callService("media_player", "volume_set", { entity_id: this.selectedSpeaker, volume_level: 0.25 });
+    }
+    const spAlain = this._hass.states?.["media_player.spotify_alaindaix"];
     if (spAlain && spAlain.state === "playing") {
-      if (spAlainId) this._hass.callService("media_player", "media_pause", { entity_id: spAlainId }).catch(() => {});
+      this._hass.callService("media_player", "media_pause", { entity_id: "media_player.spotify_alaindaix" });
     }
     const spPlus = this._hass.states?.[this.spotifyPlayer];
     if (spPlus && spPlus.state === "playing") {
@@ -2616,6 +2630,27 @@ class NasMusicCard extends HTMLElement {
         media_content_id: cmd
       });
     }, 450);
+
+    // Vérification de la réponse Alexa : si Alexa renvoie une erreur, annuler la lecture locale et les paroles
+    if (this._alexaCheckTimer) clearTimeout(this._alexaCheckTimer);
+    const targetSpeaker = this.selectedSpeaker;
+    const castTime = Date.now();
+    this._alexaCheckTimer = setTimeout(() => {
+      if (!this._hass) return;
+      const sp = this._hass.states?.[targetSpeaker];
+      const resp = sp?.attributes?.last_called_response;
+      const ts = sp?.attributes?.last_called_timestamp || 0;
+      if (resp && ts >= castTime - 1000) {
+        const lower = resp.toLowerCase();
+        if (lower.includes("pas fourni de réponse") || lower.includes("problème") || lower.includes("désolé") || lower.includes("erreur")) {
+          this.isPlayingLocal = false;
+          this._localPlayStart = 0;
+          this.showToast(`⚠️ Alexa : ${resp}`);
+          this.updateNowPlayingUI();
+          this.render();
+        }
+      }
+    }, 7000);
 
     this.showToast(`🎶 Diffusion Alexa : ${cmd}`);
   }
@@ -2725,14 +2760,28 @@ class NasMusicCard extends HTMLElement {
       this._localPlayOffset = 0;
 
       // Stopper Spotify si actif pour libérer l'enceinte Echo
-      const spAlainId = this._config?.spotify_official_player || (this._hass?.states?.["media_player.spotify_alaindaix"] ? "media_player.spotify_alaindaix" : null);
-    const spAlain = spAlainId ? this._hass.states?.[spAlainId] : null;
+      const spAlain = this._hass.states?.["media_player.spotify_alaindaix"];
       if (spAlain && spAlain.state === "playing") {
-        if (spAlainId) this._hass.callService("media_player", "media_pause", { entity_id: spAlainId }).catch(() => {});
+        this._hass.callService("media_player", "media_pause", { entity_id: "media_player.spotify_alaindaix" });
       }
       const spPlus = this._hass.states?.[this.spotifyPlayer];
       if (spPlus && spPlus.state === "playing") {
         this._hass.callService("media_player", "media_pause", { entity_id: this.spotifyPlayer });
+      }
+
+      if (this.selectedSpeaker !== "media_player.partout") {
+        const partoutState = this._hass.states?.["media_player.partout"];
+        if (partoutState && (partoutState.state === "playing" || partoutState.state === "paused")) {
+          this._hass.callService("media_player", "media_stop", { entity_id: "media_player.partout" });
+        }
+      }
+
+      const spState = this._hass.states?.[this.selectedSpeaker];
+      if (spState?.attributes?.is_volume_muted) {
+        this._hass.callService("media_player", "volume_mute", { entity_id: this.selectedSpeaker, is_volume_muted: false });
+      }
+      if (spState?.attributes?.volume_level !== undefined && spState.attributes.volume_level <= 0.05) {
+        this._hass.callService("media_player", "volume_set", { entity_id: this.selectedSpeaker, volume_level: 0.25 });
       }
 
       if (window._nasMusicLocalAudio) {
@@ -2800,9 +2849,25 @@ class NasMusicCard extends HTMLElement {
       this.isPlayingLocal = false;
     }
 
-    const isNasSensorPlaying = nasSensor && nasSensor.state === "playing";
-    const isNasPlaying = !isSpotifyActive && (isNasSensorPlaying || isLocalPlaying || (this.isPlayingLocal && speaker?.state !== "paused"));
+    // 0. Ensure active metadata is restored from localStorage if memory state is empty
+    if (!this.currentNowPlaying?.title) {
+      try {
+        const stored = localStorage.getItem("nas_music_active_meta");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed?.title) {
+            this.currentNowPlaying = parsed;
+            this.isPlayingLocal = true;
+          }
+        }
+      } catch(e) {}
+    }
 
+    const hasNasMeta = !!(this.currentNowPlaying?.title && this.currentNowPlaying.artist !== "Radio en direct");
+    const isNasSensorPlaying = nasSensor && nasSensor.state === "playing";
+    const isNasPlaying = !isSpotifyActive && (isNasSensorPlaying || isLocalPlaying || (this.isPlayingLocal && speaker?.state !== "off" && speaker?.state !== "standby"));
+
+    let isRadioResidual = false;
     let isPlaying = isSpotifyActive ? (spState?.state === "playing" || speaker?.state === "playing") : (isLocalPlaying || isNasPlaying || speaker?.state === "playing");
     let mediaTitle = null;
     let mediaArtist = null;
@@ -2869,16 +2934,40 @@ class NasMusicCard extends HTMLElement {
       curPos = this.getCurrentPlaybackPosition();
     } else {
       // 3. SI ENCEINTE RÉSEAU / ALEXA / DLNA
-      if (isNasPlaying || this.isPlayingLocal || (this.currentNowPlaying && this.currentNowPlaying.title)) {
-        if (nasSensor?.attributes?.title && (nasSensor.state === "playing" || this.isPlayingLocal)) {
-          mediaTitle = nasSensor.attributes.title;
-          mediaArtist = nasSensor.attributes.artist || "";
-          mediaAlbum = nasSensor.attributes.album || "";
-          trackId = nasSensor.attributes.track_id;
-          if (nasSensor.attributes.duration) duration = nasSensor.attributes.duration;
-        }
+      const spTitle = speaker?.attributes?.media_title;
+      const spArtist = speaker?.attributes?.media_artist;
+      const spAlbum = speaker?.attributes?.media_album_name;
+      const spPic = speaker?.attributes?.entity_picture;
+      const spDuration = speaker?.attributes?.media_duration;
 
-        if (!mediaTitle && this.currentNowPlaying?.title) {
+      // Détecter si le titre rapporté par Home Assistant est une radio (ex: RTL, RFM, etc.)
+      const isReportedRadio = spTitle && this.getRadios().some(r =>
+        (r.name && r.name.toLowerCase() === spTitle.toLowerCase()) ||
+        (r.label && r.label.toLowerCase() === spTitle.toLowerCase())
+      );
+
+      // Si l'enceinte rapporte une radio mais qu'elle est en état "paused", ou si l'utilisateur écoute du NAS :
+      // C'est un artefact résiduel de session radio antérieure (ex: RTL en pause depuis 1h sur l'Echo) !
+      isRadioResidual = isReportedRadio && (speaker?.state === "paused" || hasNasMeta || this.isPlayingLocal);
+
+      // Le média rapporté par l'enceinte n'est considéré actif que s'il joue réellement et n'est pas un résidu radio
+      const spIsPlaying = speaker?.state === "playing";
+      const spIsActiveReal = spTitle && spTitle !== "None" && spTitle !== "idle" && spTitle !== "Aucun morceau en cours" && (spIsPlaying ? !isRadioResidual : (!isReportedRadio && speaker?.state === "paused"));
+
+      if (this.isAlexaSpeaker() && nasSensor && nasSensor.state === "playing" && nasSensor.attributes?.title) {
+        mediaTitle = nasSensor.attributes.title;
+        mediaArtist = nasSensor.attributes.artist || "";
+        if (nasSensor.attributes.track_id) trackId = nasSensor.attributes.track_id;
+      } else if (spIsActiveReal && !hasNasMeta) {
+        // Priorité : l'enceinte rapporte un titre réel en cours de lecture
+        mediaTitle = spTitle;
+        mediaArtist = spArtist || "";
+        mediaAlbum = spAlbum || "";
+        coverUrl = spPic;
+        duration = spDuration || 0;
+      } else if (hasNasMeta || this.isPlayingLocal || (this.currentNowPlaying && this.currentNowPlaying.title)) {
+        // Métadonnées NAS prioritaires !
+        if (this.currentNowPlaying?.title) {
           mediaTitle = this.currentNowPlaying.title;
           mediaArtist = this.currentNowPlaying.artist || "";
           mediaAlbum = this.currentNowPlaying.album || "";
@@ -2898,17 +2987,25 @@ class NasMusicCard extends HTMLElement {
             if (qItem.RunTimeTicks) duration = Math.floor(qItem.RunTimeTicks / 10000000);
           }
         }
+      } else if (spTitle && spTitle !== "None" && spTitle !== "idle" && spTitle !== "Aucun morceau en cours" && !isRadioResidual) {
+        mediaTitle = spTitle;
+        mediaArtist = spArtist || "";
+        mediaAlbum = spAlbum || "";
+        coverUrl = spPic;
+        duration = spDuration || 0;
       }
 
-      // Si le NAS ne joue pas, utiliser les attributs de l'enceinte
-      if (!mediaTitle) {
-        const spTitle = speaker?.attributes?.media_title;
-        if (spTitle && spTitle !== "None" && spTitle !== "idle" && spTitle !== "Aucun morceau en cours") {
-          mediaTitle = spTitle;
-          mediaArtist = speaker?.attributes?.media_artist || "";
-          mediaAlbum = speaker?.attributes?.media_album_name || "";
-          coverUrl = speaker?.attributes?.entity_picture;
-          duration = speaker?.attributes?.media_duration || 0;
+      // Si le média est une radio connue, enrichir les labels et logo si nécessaire
+      if (mediaTitle) {
+        const cleanT = mediaTitle.toLowerCase().trim();
+        const matchedRadio = this.getRadios().find(r =>
+          (r.name && cleanT.includes(r.name.toLowerCase().trim())) ||
+          (r.label && cleanT.includes(r.label.toLowerCase().trim()))
+        );
+        if (matchedRadio) {
+          if (!mediaAlbum) mediaAlbum = "Radios Françaises";
+          if (!mediaArtist || mediaArtist === cleanT) mediaArtist = "Radio en direct";
+          if (!coverUrl) coverUrl = matchedRadio.icon;
         }
       }
 
@@ -2950,6 +3047,7 @@ class NasMusicCard extends HTMLElement {
 
     return {
       isPlaying,
+      isRadioResidual,
       mediaTitle: mediaTitle || "Aucun morceau en cours",
       mediaArtist: mediaArtist || "Artiste inconnu",
       mediaAlbum: mediaAlbum || "",
@@ -2965,10 +3063,13 @@ class NasMusicCard extends HTMLElement {
       const isPlaylist = item.Type === "Playlist";
       const itemId = item.Id || item.id;
       const itemName = item.Name || item.name || "";
-      const itemArtist = item.AlbumArtist || item.artist || "";
+      let itemArtist = item.AlbumArtist || item.artist || (item.Artists && item.Artists[0]) || "";
+      if (typeof itemArtist === "string" && (itemArtist.includes(";") || itemArtist.includes(","))) {
+        itemArtist = itemArtist.split(/[,;]/)[0].trim();
+      }
       const url = isPlaylist
         ? `${this.jellyfinUrl}/Playlists/${itemId}/Items?UserId=${this.jellyfinUser}`
-        : `${this.jellyfinUrl}/Users/${this.jellyfinUser}/Items?parentId=${itemId}&IncludeItemTypes=Audio&Fields=RunTimeTicks,AlbumArtist,Artists&SortBy=SortName`;
+        : `${this.jellyfinUrl}/Users/${this.jellyfinUser}/Items?ParentId=${itemId}&IncludeItemTypes=Audio&Fields=RunTimeTicks,AlbumArtist,Artists`;
       const res = await fetch(url, { headers: { "Authorization": this.authHeader } });
       if (res.ok) {
         const data = await res.json();
@@ -2984,7 +3085,15 @@ class NasMusicCard extends HTMLElement {
           this.albumTracks = tracks;
           this.nowPlayingCurrentIndex = 0;
           const first = tracks[0];
-          const artist = (Array.isArray(first.Artists) ? first.Artists.join(", ") : first.Artists) || first.AlbumArtist || itemArtist || "";
+          let artist = (Array.isArray(first.Artists) ? (first.Artists[0].Name || first.Artists[0]) : null)
+            || (first.ArtistItems && first.ArtistItems.length > 0 ? first.ArtistItems[0].Name : null)
+            || (first.AlbumArtist && first.AlbumArtist !== "Various Artists" ? first.AlbumArtist : null)
+            || (first.artist && first.artist !== "Various Artists" ? first.artist : null)
+            || itemArtist
+            || "";
+          if (typeof artist === "string" && (artist.includes(";") || artist.includes(","))) {
+            artist = artist.split(/[,;]/)[0].trim();
+          }
           this.currentNowPlaying = {
             title: first.Name || first.name,
             artist: artist,
@@ -3040,8 +3149,14 @@ class NasMusicCard extends HTMLElement {
 
     let pos = 0;
 
-    // 1. Priorité absolue : position matérielle rapportée directement par l'enceinte (Alexa, DLNA ou Spotify)
-    if (speaker && (speaker.state === "playing" || speaker.state === "paused") && typeof speaker.attributes?.media_position === "number" && speaker.attributes?.media_position > 0) {
+    const spTitle = (speaker?.attributes?.media_title || "").toLowerCase().trim();
+    const isPlayingNas = this.isPlayingLocal && !this.isSpotifyActive();
+    const curTitle = (this.currentNowPlaying?.title || "").toLowerCase().trim();
+    const curAlbum = (this.currentNowPlaying?.album || "").toLowerCase().trim();
+    const matchesCurrent = !isPlayingNas || !spTitle || spTitle === curTitle || spTitle === curAlbum || (this.nowPlayingQueue && this.nowPlayingQueue.some(t => (t.Name || t.name || "").toLowerCase().trim() === spTitle));
+
+    // 1. Priorité absolue : position matérielle rapportée directement par l'enceinte (Alexa, DLNA ou Spotify) SI le média correspond
+    if (matchesCurrent && speaker && (speaker.state === "playing" || speaker.state === "paused") && typeof speaker.attributes?.media_position === "number" && speaker.attributes?.media_position > 0) {
       const basePos = speaker.attributes.media_position;
       const updated = speaker.attributes.media_position_updated_at;
       const elapsed = (speaker.state === "playing" && updated) ? Math.max(0, (Date.now() - new Date(updated).getTime()) / 1000) : 0;
@@ -3079,7 +3194,7 @@ class NasMusicCard extends HTMLElement {
     const info = this.getNowPlayingInfo();
     const speaker = this._hass?.states[this.selectedSpeaker];
     const isPlaying = info.isPlaying;
-    const isSpeakerActive = info.isPlaying || (speaker && (speaker.state === "playing" || speaker.state === "paused"));
+    const isSpeakerActive = info.isPlaying || (speaker && (speaker.state === "playing" || (speaker.state === "paused" && !info.isRadioResidual && info.mediaTitle !== "Aucun morceau en cours")));
     const mediaTitle = info.mediaTitle;
     const mediaArtist = info.mediaArtist;
     const coverUrl = info.coverUrl;
@@ -4228,12 +4343,13 @@ class NasMusicCard extends HTMLElement {
           color: #fff !important;
         }
         .btn-speaker-power.is-off {
-          color: #ef4444;
-          border-color: rgba(239, 68, 68, 0.4);
+          color: #9ca3af;
+          border-color: rgba(156, 163, 175, 0.4);
         }
         .btn-speaker-power.is-on {
           color: #10b981;
-          border-color: rgba(16, 185, 129, 0.4);
+          border-color: rgba(16, 185, 129, 0.5);
+          background: rgba(16, 185, 129, 0.12);
         }
 
         .modal-speaker-vol-row {
@@ -4303,12 +4419,13 @@ class NasMusicCard extends HTMLElement {
             Musique du NAS
           </div>
           <div class="speaker-box">
-            <button id="btn-open-speaker-mgr" class="speaker-mgr-btn" title="Gérer les enceintes : volumes, On/Off, multi-diffusion">
-              <span>🔊</span>
-              <span>Enceintes</span>
+            <button id="btn-open-speaker-mgr" class="speaker-mgr-btn" title="Gérer les enceintes : volumes, On/Off, multi-diffusion" style="${this.selectedSpeakersMulti && this.selectedSpeakersMulti.size > 1 ? 'background:rgba(16,185,129,0.2);border-color:#10b981;color:#10b981;' : ''}">
+              <span>${this.selectedSpeakersMulti && this.selectedSpeakersMulti.size > 1 ? '📡' : '🔊'}</span>
+              <span>${this.selectedSpeakersMulti && this.selectedSpeakersMulti.size > 1 ? `Multi (${this.selectedSpeakersMulti.size})` : 'Enceintes'}</span>
             </button>
             <select id="speaker-dropdown" class="speaker-select">
-              ${speakerList.map(s => `<option value="${s.id}" ${s.id === this.selectedSpeaker ? 'selected' : ''}>${s.name}</option>`).join("")}
+              ${this.selectedSpeakersMulti && this.selectedSpeakersMulti.size > 1 ? `<option value="__multi__" selected>📡 Multi-diffusion (${this.selectedSpeakersMulti.size} enc.)</option>` : ''}
+              ${speakerList.map(s => `<option value="${s.id}" ${(!this.selectedSpeakersMulti || this.selectedSpeakersMulti.size <= 1) && s.id === this.selectedSpeaker ? 'selected' : ''}>${s.name}</option>`).join("")}
             </select>
             <input type="range" id="speaker-vol-slider" class="vol-slider" min="0" max="100" value="50" title="Volume enceinte active">
           </div>
@@ -4337,7 +4454,7 @@ class NasMusicCard extends HTMLElement {
 
         <!-- CATEGORY PILLS -->
         <div class="tabs-wrap">
-          ${Object.values(this.getCategories()).map(cat => `
+          ${Object.values(CATEGORIES).map(cat => `
             <button class="tab-pill ${this.activeCategory === cat.id ? 'active' : ''}" data-cat="${cat.id}">
               ${cat.label}
             </button>
@@ -4523,7 +4640,7 @@ class NasMusicCard extends HTMLElement {
                 Enceintes (${speakers.length})
               </div>
               <button class="btn-modal-action" id="btn-multi-cast" style="font-size:11px;padding:4px 10px;background:#10b981;border-color:#10b981;color:#fff;" title="Diffuser la musique ou radio en cours sur toutes les enceintes cochées">
-                ▶ Diffuser sur la sélection
+                ▶ Diffuser sur la sélection (${this.selectedSpeakersMulti && this.selectedSpeakersMulti.size > 0 ? this.selectedSpeakersMulti.size : 1})
               </button>
             </div>
 
@@ -4533,15 +4650,19 @@ class NasMusicCard extends HTMLElement {
                 const isLocal = this.isLocalSystemSpeaker(s.id);
                 const localAudio = isLocal ? this.getLocalAudio() : null;
                 const stateObj = this._hass?.states?.[s.id];
-                const state = isLocal ? (!localAudio.paused && localAudio.currentTime > 0 ? "playing" : "idle") : (stateObj?.state || "inconnu");
-                const isPlaying = state === "playing";
-                const isPaused = isLocal ? (localAudio.paused && localAudio.currentTime > 0) : (state === "paused");
-                const isOff = false;
+                const rawState = isLocal ? (!localAudio.paused && localAudio.currentTime > 0 ? "playing" : "idle") : (stateObj?.state || "inconnu");
+                const isCurrent = s.id === activeSpeakerId;
+                const isNasActiveHere = isCurrent && this.isPlayingLocal && this.currentNowPlaying?.title && this.currentNowPlaying.title !== "Aucun morceau en cours";
+                const isPlaying = rawState === "playing" || isNasActiveHere;
+                const isPaused = isLocal ? (localAudio.paused && localAudio.currentTime > 0) : (rawState === "paused");
+                const isOff = isLocal ? (!isPlaying && !isPaused) : (rawState === "off" || rawState === "unavailable" || (!isPlaying && !isPaused));
                 const vol = isLocal ? Math.round((localAudio.volume !== undefined ? localAudio.volume : 0.8) * 100) : (stateObj?.attributes?.volume_level !== undefined ? Math.round(stateObj.attributes.volume_level * 100) : null);
                 const isMuted = isLocal ? localAudio.muted : (stateObj?.attributes?.is_volume_muted || false);
-                const isCurrent = s.id === activeSpeakerId;
                 const isChecked = this.selectedSpeakersMulti?.has(s.id);
-                const mediaTitle = isLocal && isPlaying ? (this.currentNowPlaying?.title || "En direct") : (stateObj?.attributes?.media_title || "");
+                let mediaTitle = isLocal && isPlaying ? (this.currentNowPlaying?.title || "En direct") : (stateObj?.attributes?.media_title || "");
+                if (isNasActiveHere && this.currentNowPlaying?.title) {
+                  mediaTitle = this.currentNowPlaying.title + (this.currentNowPlaying.artist ? ` - ${this.currentNowPlaying.artist}` : "");
+                }
                 const sidClean = s.id.replace(/\./g, "_");
 
                 return `
@@ -4558,7 +4679,7 @@ class NasMusicCard extends HTMLElement {
                         </div>
                         <div class="modal-speaker-sub">
                           <span class="state-dot ${isPlaying ? 'state-playing' : (isPaused ? 'state-paused' : (isOff ? 'state-off' : 'state-idle'))}"></span>
-                          ${isPlaying ? `Lecture : ${mediaTitle || 'En cours'}` : (isPaused ? 'En pause' : (isOff ? 'Éteinte' : 'Prête'))}
+                          ${isPlaying ? `Lecture : ${mediaTitle || 'En cours'}` : (isPaused ? 'En pause' : (isOff ? 'Prête (éteinte)' : 'Prête'))}
                         </div>
                       </div>
 
@@ -4566,7 +4687,7 @@ class NasMusicCard extends HTMLElement {
                         <button class="modal-icon-btn ${isCurrent ? 'btn-select-active' : ''} btn-speaker-select" data-speaker-id="${s.id}" title="${isCurrent ? 'Enceinte principale active' : 'Sélectionner cette enceinte'}">
                           ${isCurrent ? '✓ Active' : '🎯 Choisir'}
                         </button>
-                        <button class="modal-icon-btn btn-speaker-power ${isOff ? 'is-off' : 'is-on'}" data-speaker-id="${s.id}" title="${isOff ? 'Allumer' : 'Éteindre'}">
+                        <button class="modal-icon-btn btn-speaker-power ${isOff ? 'is-off' : 'is-on'}" data-speaker-id="${s.id}" title="${isOff ? 'Allumer / Réactiver cette enceinte' : 'Éteindre / Arrêter cette enceinte'}">
                           ⏻
                         </button>
                         <button class="modal-icon-btn btn-speaker-toggle-play" data-speaker-id="${s.id}" title="${isPlaying ? 'Pause' : 'Lecture'}">
@@ -4611,22 +4732,75 @@ class NasMusicCard extends HTMLElement {
   }
 
   toggleSpeakerPower(speakerId) {
+    if (!speakerId) return;
+    const speakerObj = this.getSpeakers().find(s => s.id === speakerId);
+    const speakerName = speakerObj?.name || speakerId;
+
     if (this.isLocalSystemSpeaker(speakerId)) {
-      this.toggleSpeakerPlayPause(speakerId);
+      const audio = this.getLocalAudio();
+      if (!audio.paused && audio.currentTime > 0) {
+        audio.pause();
+        audio.currentTime = 0;
+        this.isPlayingLocal = false;
+        this.showToast(`⏹ ${speakerName} arrêtée`);
+      } else {
+        audio.play().catch(() => {});
+        this.isPlayingLocal = true;
+        this.showToast(`⚡ ${speakerName} activée`);
+      }
+      this.updateNowPlayingUI();
+      this.render();
       return;
     }
-    if (!this._hass || !speakerId) return;
-    const state = this._hass.states?.[speakerId]?.state;
-    if (state === "off" || state === "unavailable") {
-      this._hass.callService("media_player", "turn_on", { entity_id: speakerId });
-      this.showToast(`⚡ Allumage de l'enceinte...`);
+
+    if (!this._hass) return;
+    const stateObj = this._hass.states?.[speakerId];
+    const rawState = stateObj?.state || "idle";
+    const isCurrent = speakerId === this.selectedSpeaker;
+    const isOff = rawState === "off";
+
+    if (isOff) {
+      // Allumage / Réveil si l'enceinte est explicitement éteinte
+      const supported = stateObj?.attributes?.supported_features || 0;
+      if (supported & 128) {
+        this._hass.callService("media_player", "turn_on", { entity_id: speakerId }).catch(() => {});
+      }
+      this.showToast(`⚡ ${speakerName} allumée`);
     } else {
-      this._hass.callService("media_player", "turn_off", { entity_id: speakerId });
-      this.showToast(`⏻ Extinction de l'enceinte...`);
+      // Arrêt / Extinction complète de l'enceinte
+      this._hass.callService("media_player", "media_stop", { entity_id: speakerId }).catch(() => {});
+      if (this.isAlexaSpeaker(speakerId)) {
+        this._hass.callService("media_player", "play_media", {
+          entity_id: speakerId,
+          media_content_type: "custom",
+          media_content_id: "arrête"
+        }).catch(() => {});
+      }
+      const supported = stateObj?.attributes?.supported_features || 0;
+      if (supported & 256) {
+        this._hass.callService("media_player", "turn_off", { entity_id: speakerId }).catch(() => {});
+      }
+
+      if (isCurrent) {
+        this.isPlayingLocal = false;
+        this.currentNowPlaying = null;
+        try { localStorage.removeItem("nas_music_active_meta"); } catch(e) {}
+      }
+
+      this.showToast(`⏹ ${speakerName} arrêtée`);
     }
+
+    setTimeout(() => {
+      this.updateNowPlayingUI();
+      this.render();
+    }, 400);
   }
 
   toggleSpeakerPlayPause(speakerId) {
+    if (!speakerId) return;
+    const speakerObj = this.getSpeakers().find(s => s.id === speakerId);
+    const speakerName = speakerObj?.name || speakerId;
+
     if (this.isLocalSystemSpeaker(speakerId)) {
       const audio = this.getLocalAudio();
       if (audio.paused) {
@@ -4637,10 +4811,43 @@ class NasMusicCard extends HTMLElement {
         this.isPlayingLocal = false;
       }
       this.updateNowPlayingUI();
+      this.render();
       return;
     }
-    if (!this._hass || !speakerId) return;
-    this._hass.callService("media_player", "media_play_pause", { entity_id: speakerId });
+
+    if (!this._hass) return;
+    const stateObj = this._hass.states?.[speakerId];
+    const rawState = stateObj?.state || "idle";
+    const isCurrent = speakerId === this.selectedSpeaker;
+    const isPlaying = rawState === "playing" || (isCurrent && this.isPlayingLocal);
+
+    if (this.isAlexaSpeaker(speakerId)) {
+      if (isPlaying) {
+        this._hass.callService("media_player", "media_pause", { entity_id: speakerId }).catch(() => {});
+        this._hass.callService("media_player", "play_media", {
+          entity_id: speakerId,
+          media_content_type: "custom",
+          media_content_id: "pause"
+        }).catch(() => {});
+        if (isCurrent) this.isPlayingLocal = false;
+      } else {
+        this._hass.callService("media_player", "media_play", { entity_id: speakerId }).catch(() => {});
+        this._hass.callService("media_player", "play_media", {
+          entity_id: speakerId,
+          media_content_type: "custom",
+          media_content_id: "reprends"
+        }).catch(() => {});
+        if (isCurrent) this.isPlayingLocal = true;
+      }
+    } else {
+      this._hass.callService("media_player", "media_play_pause", { entity_id: speakerId }).catch(() => {});
+      if (isCurrent) this.isPlayingLocal = !this.isPlayingLocal;
+    }
+
+    setTimeout(() => {
+      this.updateNowPlayingUI();
+      this.render();
+    }, 400);
   }
 
   toggleSpeakerMute(speakerId) {
@@ -4661,95 +4868,156 @@ class NasMusicCard extends HTMLElement {
   stopAllSpeakers() {
     if (window._nasMusicLocalAudio) {
       window._nasMusicLocalAudio.pause();
+      window._nasMusicLocalAudio.currentTime = 0;
     }
     if (!this._hass) return;
     const speakers = this.getSpeakers();
     speakers.forEach(s => {
-      const st = this._hass.states?.[s.id]?.state;
-      if (st && st !== "off" && st !== "unavailable") {
-        this._hass.callService("media_player", "media_stop", { entity_id: s.id });
+      this._hass.callService("media_player", "media_stop", { entity_id: s.id }).catch(() => {});
+      if (this.isAlexaSpeaker(s.id)) {
+        this._hass.callService("media_player", "play_media", {
+          entity_id: s.id,
+          media_content_type: "custom",
+          media_content_id: "arrête"
+        }).catch(() => {});
+      }
+      const stateObj = this._hass.states?.[s.id];
+      const supported = stateObj?.attributes?.supported_features || 0;
+      if (supported & 256) {
+        this._hass.callService("media_player", "turn_off", { entity_id: s.id }).catch(() => {});
       }
     });
-    this._hass.callService("media_player", "media_pause", { entity_id: this.spotifyPlayer }).catch(() => {});
+
+    const spState = this._hass.states?.[this.spotifyPlayer];
+    if (spState && spState.state === "playing") {
+      this._hass.callService("media_player", "media_pause", { entity_id: this.spotifyPlayer }).catch(() => {});
+    }
+
     this.isPlayingLocal = false;
+    this.currentNowPlaying = null;
+    try { localStorage.removeItem("nas_music_active_meta"); } catch(e) {}
     this.showToast("⏹ Toutes les enceintes ont été arrêtées");
+    setTimeout(() => {
+      this.updateNowPlayingUI();
+      this.render();
+    }, 400);
   }
 
   broadcastToSelection() {
     if (!this._hass) return;
-    const selected = Array.from(this.selectedSpeakersMulti || []);
+    let selected = Array.from(this.selectedSpeakersMulti || []);
     if (selected.length === 0) {
-      alert("Veuillez cocher au moins une enceinte dans la liste pour la multi-diffusion.");
-      return;
-    }
-
-    // 1. Détecter l'état actuel de l'enceinte active
-    const activeSpeakerId = this.selectedSpeaker;
-    const activeStateObj = this._hass.states?.[activeSpeakerId];
-    const activeTitle = activeStateObj?.attributes?.media_title || "";
-    const activeArtist = activeStateObj?.attributes?.media_artist || "";
-    const activePic = activeStateObj?.attributes?.entity_picture || "";
-    const activeAppName = activeStateObj?.attributes?.app_name || "";
-
-    // A. RADIO en cours ou mémorisée
-    let radio = this._lastPlayedRadio;
-    if (!radio && activeTitle) {
-      const match = this.getRadios().find(r =>
-        (r.name && activeTitle.toLowerCase().includes(r.name.toLowerCase())) ||
-        (r.label && activeTitle.toLowerCase().includes(r.label.toLowerCase())) ||
-        (r.name && r.name.toLowerCase().includes(activeTitle.toLowerCase()))
-      );
-      if (match) {
-        radio = match;
-      } else if (activePic.includes("tunein") || (activeStateObj?.attributes?.media_content_type === "music" && activeStateObj?.attributes?.media_duration === 0)) {
-        radio = { name: activeTitle, label: activeTitle, icon: activePic };
+      if (this.selectedSpeaker) {
+        selected = [this.selectedSpeaker];
+      } else {
+        alert("Veuillez cocher au moins une enceinte dans la liste pour la multi-diffusion.");
+        return;
       }
+    } else if (this.selectedSpeaker && !selected.includes(this.selectedSpeaker)) {
+      // Si l'utilisateur coche une enceinte additionnelle alors qu'il écoutait sur l'enceinte active, inclure l'enceinte active pour faire du vrai multi-room
+      selected.unshift(this.selectedSpeaker);
     }
 
-    if (radio) {
-      this.showToast(`📡 Multi-diffusion radio « ${radio.label || radio.name} » sur ${selected.length} enceinte(s)...`);
-      selected.forEach(sid => {
-        if (this.isLocalSystemSpeaker(sid)) {
-          if (radio.streamUrl) {
-            const audio = this.getLocalAudio();
-            audio.src = radio.streamUrl;
-            audio.play().catch(() => {});
-          }
-        } else if (sp && sp.isDlna) {
-          if (sid === "media_player.sonoro_cuisine") {
-            this._hass.callService("media_player", "play_media", {
-              entity_id: sid,
-              media_content_type: "radio",
-              media_content_id: radio.name,
-              extra: { title: radio.label || radio.name, thumb: radio.icon }
-            });
-          } else if (radio.streamUrl) {
-            this._hass.callService("media_player", "play_media", {
-              entity_id: sid,
-              media_content_type: "music",
-              media_content_id: radio.streamUrl,
-              extra: { title: radio.label || radio.name, thumb: radio.icon }
-            });
-          }
-        } else {
-          const prov = radio.provider || ((radio.name || "").toLowerCase().includes("rfm") || (radio.name || "").toLowerCase().includes("jazz") ? "tunein" : (this.radioProvider || "audioplayer"));
-          const radioCmd = prov === "tunein"
-            ? `joue la radio ${radio.name} sur TuneIn`
-            : prov === "audioplayer"
-              ? `demande à Audio Player de jouer ${radio.name}`
-              : `demande à Radioplayer de jouer ${radio.name}`;
+    if (selected.length > 1) {
+      this.selectedSpeakersMulti = new Set(selected);
+      try {
+        localStorage.setItem("nas_music_multi_speakers", JSON.stringify(selected));
+      } catch(e) {}
+    }
+    this.showSpeakerManager = false;
 
-          this._hass.callService("media_player", "play_media", {
-            entity_id: sid,
-            media_content_type: "custom",
-            media_content_id: radioCmd
-          });
-        }
+    // 1. Détecter la source en cours de lecture :
+    // Priorité absolue : ce qui est actuellement sélectionné ou affiché dans la carte !
+    const currentInfo = this.getNowPlayingInfo();
+    let radio = null;
+
+    if (this.currentNowPlaying?.artist === "Radio en direct" && this.currentNowPlaying.title) {
+      const cleanTitle = this.currentNowPlaying.title.toLowerCase().trim();
+      radio = this.getRadios().find(r =>
+        (r.name && cleanTitle.includes(r.name.toLowerCase().trim())) ||
+        (r.label && cleanTitle.includes(r.label.toLowerCase().trim())) ||
+        (r.name && r.name.toLowerCase().trim().includes(cleanTitle))
+      );
+      if (!radio) {
+        radio = { name: this.currentNowPlaying.title, label: this.currentNowPlaying.title, icon: this.currentNowPlaying.cover };
+      }
+    } else if (this.currentView === "radios" && this._lastPlayedRadio) {
+      radio = this._lastPlayedRadio;
+    } else if (currentInfo.mediaTitle && currentInfo.mediaTitle !== "Aucun morceau en cours") {
+      const cleanTitle = currentInfo.mediaTitle.toLowerCase().trim();
+      const matched = this.getRadios().find(r =>
+        (r.name && cleanTitle.includes(r.name.toLowerCase().trim())) ||
+        (r.label && cleanTitle.includes(r.label.toLowerCase().trim()))
+      );
+      if (matched) radio = matched;
+    }
+
+    // A. RADIO
+    if (radio) {
+      this._lastPlayedRadio = radio;
+      this.showToast(`📡 Multi-diffusion radio « ${radio.label || radio.name} » sur ${selected.length} enceinte(s)...`);
+      selected.forEach((sid, idx) => {
+        setTimeout(() => {
+          const sp = this.getSpeakers().find(s => s.id === sid);
+          const stateObj = this._hass.states?.[sid];
+          if (stateObj?.attributes?.is_volume_muted) {
+            this._hass.callService("media_player", "volume_mute", { entity_id: sid, is_volume_muted: false });
+          }
+          if (stateObj?.attributes?.volume_level !== undefined && stateObj.attributes.volume_level <= 0.05) {
+            this._hass.callService("media_player", "volume_set", { entity_id: sid, volume_level: 0.25 });
+          }
+          if (this.isLocalSystemSpeaker(sid)) {
+            if (radio.streamUrl) {
+              const audio = this.getLocalAudio();
+              audio.src = radio.streamUrl;
+              audio.play().catch(() => {});
+            }
+          } else if (sp && sp.isDlna) {
+            if (sid === "media_player.sonoro_cuisine") {
+              this._hass.callService("media_player", "play_media", {
+                entity_id: sid,
+                media_content_type: "radio",
+                media_content_id: radio.name,
+                extra: { title: radio.label || radio.name, thumb: radio.icon }
+              });
+            } else if (radio.streamUrl) {
+              this._hass.callService("media_player", "play_media", {
+                entity_id: sid,
+                media_content_type: "music",
+                media_content_id: radio.streamUrl,
+                extra: { title: radio.label || radio.name, thumb: radio.icon }
+              });
+            }
+          } else {
+            const isGroup = sid === "media_player.partout" || sid === "media_player.chambre";
+            const groupName = sid === "media_player.partout" ? "Partout" : (sp?.name || "Chambre");
+            const prov = radio.provider || ((radio.name || "").toLowerCase().includes("rfm") || (radio.name || "").toLowerCase().includes("jazz") ? "tunein" : (this.radioProvider || "audioplayer"));
+            
+            let radioCmd = "";
+            if (isGroup) {
+              radioCmd = `joue la radio ${radio.name} sur ${groupName}`;
+            } else {
+              radioCmd = prov === "tunein"
+                ? `joue la radio ${radio.name} sur TuneIn`
+                : prov === "audioplayer"
+                  ? `demande à Audio Player de jouer ${radio.name}`
+                  : `demande à Radioplayer de jouer ${radio.name}`;
+            }
+
+            this._hass.callService("media_player", "play_media", {
+              entity_id: sid,
+              media_content_type: "custom",
+              media_content_id: radioCmd
+            });
+          }
+        }, idx * 1200);
       });
       return;
     }
 
     // B. SPOTIFY
+    const playingStateObj = this._hass.states?.[this.selectedSpeaker];
+    const activeAppName = playingStateObj?.attributes?.app_name || "";
     const spStateObj = this._hass.states?.[this.spotifyPlayer];
     const isSpotifyActive = (activeAppName === "Spotify") || (spStateObj?.state === "playing") || (this.currentView === "spotify");
     if (isSpotifyActive) {
@@ -4777,28 +5045,37 @@ class NasMusicCard extends HTMLElement {
     const alb = this._lastPlayedAlbum || this.selectedAlbum;
     if (alb) {
       this.showToast(`🎶 Multi-diffusion album « ${alb.Name || alb.displayName} » sur ${selected.length} enceinte(s)...`);
-      selected.forEach(sid => {
-        const sp = this.getSpeakers().find(s => s.id === sid);
-        if (this.isLocalSystemSpeaker(sid)) {
-          if (this.nowPlayingQueue && this.nowPlayingQueue.length > 0) {
-            this.castTrack(this.nowPlayingQueue[0], alb);
+      selected.forEach((sid, idx) => {
+        setTimeout(() => {
+          const sp = this.getSpeakers().find(s => s.id === sid);
+          const stateObj = this._hass.states?.[sid];
+          if (stateObj?.attributes?.is_volume_muted) {
+            this._hass.callService("media_player", "volume_mute", { entity_id: sid, is_volume_muted: false });
           }
-        } else if (sp && sp.isDlna) {
-          const isPlaylist = alb.Type === "Playlist";
-          const uri = alb.Id ? `jellyfin--GRvzKL7Q://${isPlaylist ? "playlist" : "album"}/${alb.Id}` : `library://album/${encodeURIComponent(alb.Name)}`;
-          this._hass.callService("mass", "play_media", {
-            entity_id: sid,
-            media_id: [uri],
-            enqueue: "replace"
-          }).catch(() => {});
-        } else {
-          const cmd = alb.customCmd || buildVoiceCmd(alb, this.skillInvocation);
-          this._hass.callService("media_player", "play_media", {
-            entity_id: sid,
-            media_content_type: "custom",
-            media_content_id: cmd
-          });
-        }
+          if (stateObj?.attributes?.volume_level !== undefined && stateObj.attributes.volume_level <= 0.05) {
+            this._hass.callService("media_player", "volume_set", { entity_id: sid, volume_level: 0.25 });
+          }
+          if (this.isLocalSystemSpeaker(sid)) {
+            if (this.nowPlayingQueue && this.nowPlayingQueue.length > 0) {
+              this.castTrack(this.nowPlayingQueue[0], alb);
+            }
+          } else if (sp && sp.isDlna) {
+            const isPlaylist = alb.Type === "Playlist";
+            const uri = alb.Id ? `jellyfin--GRvzKL7Q://${isPlaylist ? "playlist" : "album"}/${alb.Id}` : `library://album/${encodeURIComponent(alb.Name)}`;
+            this._hass.callService("mass", "play_media", {
+              entity_id: sid,
+              media_id: [uri],
+              enqueue: "replace"
+            }).catch(() => {});
+          } else {
+            const cmd = alb.customCmd || buildVoiceCmd(alb);
+            this._hass.callService("media_player", "play_media", {
+              entity_id: sid,
+              media_content_type: "custom",
+              media_content_id: cmd
+            });
+          }
+        }, idx * 1200);
       });
       return;
     }
@@ -4809,37 +5086,181 @@ class NasMusicCard extends HTMLElement {
       const albName = track.album || track.Album || track.title || track.Name;
       const albArtist = track.artist || track.AlbumArtist || "";
       this.showToast(`🎶 Multi-diffusion sur ${selected.length} enceinte(s)...`);
-      selected.forEach(sid => {
-        const sp = this.getSpeakers().find(s => s.id === sid);
-        if (this.isLocalSystemSpeaker(sid)) {
-          const trackId = track.trackId || track.Id;
-          if (trackId) {
-            const audio = this.getLocalAudio();
-            audio.src = `${this.jellyfinUrl}/Audio/${trackId}/stream.mp3?static=true&api_key=${this.jellyfinToken}`;
-            audio.play().catch(() => {});
+      selected.forEach((sid, idx) => {
+        setTimeout(() => {
+          const sp = this.getSpeakers().find(s => s.id === sid);
+          const stateObj = this._hass.states?.[sid];
+          if (stateObj?.attributes?.is_volume_muted) {
+            this._hass.callService("media_player", "volume_mute", { entity_id: sid, is_volume_muted: false });
           }
-        } else if (sp && sp.isDlna) {
-          const trackId = track.trackId || track.Id;
-          if (trackId) {
+          if (stateObj?.attributes?.volume_level !== undefined && stateObj.attributes.volume_level <= 0.05) {
+            this._hass.callService("media_player", "volume_set", { entity_id: sid, volume_level: 0.25 });
+          }
+          if (this.isLocalSystemSpeaker(sid)) {
+            const trackId = track.trackId || track.Id;
+            if (trackId) {
+              const audio = this.getLocalAudio();
+              audio.src = `${this.jellyfinUrl}/Audio/${trackId}/stream.mp3?static=true&api_key=${this.jellyfinToken}`;
+              audio.play().catch(() => {});
+            }
+          } else if (sp && sp.isDlna) {
+            const trackId = track.trackId || track.Id;
+            if (trackId) {
+              this._hass.callService("media_player", "play_media", {
+                entity_id: sid,
+                media_content_type: "music",
+                media_content_id: `${this.jellyfinUrl}/Audio/${trackId}/stream.mp3?static=true&api_key=${this.jellyfinToken}`
+              });
+            }
+          } else {
+            const cmd = buildVoiceCmd({ Name: albName, AlbumArtist: albArtist });
             this._hass.callService("media_player", "play_media", {
               entity_id: sid,
-              media_content_type: "music",
-              media_content_id: `${this.jellyfinUrl}/Audio/${trackId}/stream.mp3?static=true&api_key=${this.jellyfinToken}`
+              media_content_type: "custom",
+              media_content_id: cmd
             });
           }
-        } else {
-          const cmd = `demande à ${this.skillInvocation} de jouer l'album ${albName}${albArtist && !/various|compilation|plusieurs/i.test(albArtist) ? ' de ' + albArtist : ''}`;
-          this._hass.callService("media_player", "play_media", {
-            entity_id: sid,
-            media_content_type: "custom",
-            media_content_id: cmd
-          });
-        }
+        }, idx * 1200);
       });
+      this.updateSpeakerInfo();
+      this.render();
       return;
     }
 
     this.showToast("ℹ️ Lancez d'abord une radio, un album ou Spotify pour le multi-diffuser.");
+    this.render();
+  }
+
+  transferPlaybackTo(newSpeakerId) {
+    if (!newSpeakerId) return;
+    const oldSpeakerId = this.selectedSpeaker;
+    if (oldSpeakerId === newSpeakerId) return;
+
+    this.selectedSpeaker = newSpeakerId;
+    localStorage.setItem("nas_music_speaker", newSpeakerId);
+    this.selectedSpeakersMulti.clear();
+    try { localStorage.removeItem("nas_music_multi_speakers"); } catch(e) {}
+
+    const speakerObj = this.getSpeakers().find(s => s.id === newSpeakerId);
+    const speakerName = speakerObj?.name || newSpeakerId;
+
+    if (speakerObj && speakerObj.zone && this._hass) {
+      this._hass.callService("input_select", "select_option", {
+        entity_id: "input_select.zone_ecoute_multimedia",
+        option: speakerObj.zone
+      }).catch(() => {});
+    }
+
+    window.dispatchEvent(new CustomEvent("nas-music-speaker-changed", { detail: { speaker: newSpeakerId } }));
+
+    // Stop old speaker if it was playing and different from new
+    if (oldSpeakerId && oldSpeakerId !== newSpeakerId && this._hass) {
+      if (this.isLocalSystemSpeaker(oldSpeakerId)) {
+        if (window._nasMusicLocalAudio) window._nasMusicLocalAudio.pause();
+      } else {
+        this._hass.callService("media_player", "media_stop", { entity_id: oldSpeakerId }).catch(() => {});
+        if (this.isAlexaSpeaker(oldSpeakerId)) {
+          this._hass.callService("media_player", "play_media", {
+            entity_id: oldSpeakerId,
+            media_content_type: "custom",
+            media_content_id: "arrête"
+          }).catch(() => {});
+        }
+      }
+    }
+
+    // Determine what was playing to transfer playback!
+    const info = this.getNowPlayingInfo();
+    const oldState = this._hass?.states?.[oldSpeakerId];
+    const wasPlaying = info.isPlaying || oldState?.state === "playing" || this.isPlayingLocal;
+
+    if (!wasPlaying) {
+      this.showToast(`🎯 Enceinte sélectionnée : ${speakerName}`);
+      this.updateSpeakerInfo();
+      this.render();
+      return;
+    }
+
+    // 1. Radio en direct
+    if (this.currentNowPlaying?.artist === "Radio en direct" || (info.mediaArtist === "Radio en direct" && !info.isRadioResidual && info.mediaTitle)) {
+      const radioTitle = this.currentNowPlaying?.title || info.mediaTitle;
+      const cleanTitle = (radioTitle || "").toLowerCase().trim();
+      let radio = this.getRadios().find(r =>
+        (r.name && cleanTitle.includes(r.name.toLowerCase().trim())) ||
+        (r.label && cleanTitle.includes(r.label.toLowerCase().trim())) ||
+        (r.name && r.name.toLowerCase().trim().includes(cleanTitle))
+      );
+      if (!radio && this._lastPlayedRadio) radio = this._lastPlayedRadio;
+      if (radio) {
+        this.showToast(`📻 Bascule radio « ${radio.label || radio.name} » vers ${speakerName}...`);
+        setTimeout(() => {
+          this.castRadio(radio);
+          this.render();
+        }, 500);
+        return;
+      }
+    }
+
+    // 2. Spotify
+    if (this.isSpotifyActive()) {
+      const spPlayer = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
+      const targetDev = speakerObj?.spotifyDevice;
+      if (targetDev) {
+        this.showToast(`🟢 Bascule Spotify vers ${speakerName}...`);
+        setTimeout(() => {
+          this._hass.callService("spotifyplus", "player_transfer_playback", {
+            entity_id: spPlayer,
+            device_id: targetDev,
+            play: "play"
+          }).catch(() => {});
+          this.render();
+        }, 500);
+        return;
+      }
+    }
+
+    // 3. Album NAS prioritaire si un album est identifié
+    const albName = this.selectedAlbum?.Name || this.selectedAlbum?.name || this._lastPlayedAlbum?.Name || this._lastPlayedAlbum?.name || (this.currentNowPlaying?.album && this.currentNowPlaying.album !== this.currentNowPlaying.title ? this.currentNowPlaying.album : null);
+
+    if (albName) {
+      const albObj = this.selectedAlbum || this._lastPlayedAlbum || { Name: albName, AlbumArtist: this.currentNowPlaying?.artist || "" };
+      this.showToast(`🎶 Bascule album vers ${speakerName} : ${albName}...`);
+      setTimeout(() => {
+        this.castAlbum(albObj, this.isShuffle);
+        this.render();
+      }, 500);
+      return;
+    }
+
+    if (this._lastPlayedTrack && this._lastPlayedAlbum) {
+      this.showToast(`🎶 Bascule vers ${speakerName} : ${this._lastPlayedTrack.Name || this._lastPlayedTrack.name}...`);
+      setTimeout(() => {
+        this.castTrack(this._lastPlayedTrack, this._lastPlayedAlbum);
+        this.render();
+      }, 500);
+      return;
+    }
+
+    if (this.currentNowPlaying?.title && this.currentNowPlaying.artist !== "Radio en direct") {
+      this.showToast(`🎶 Bascule vers ${speakerName} : ${this.currentNowPlaying.title}...`);
+      setTimeout(() => {
+        if (this.isAlexaSpeaker()) {
+          const titleClean = this.currentNowPlaying.title.replace(/[\[\]()"]/g, "").trim();
+          const artistClean = (this.currentNowPlaying.artist || "").split(/[,;]/)[0].replace(/[\[\]()"]/g, "").trim();
+          const cmd = `demande à mon nas de jouer le morceau ${titleClean}${artistClean ? " de " + artistClean : ""}`;
+          this.castAlexa(cmd);
+        } else if (this.currentNowPlaying.trackId) {
+          this.castTrack({ Id: this.currentNowPlaying.trackId, Name: this.currentNowPlaying.title, artist: this.currentNowPlaying.artist });
+        }
+        this.render();
+      }, 500);
+      return;
+    }
+
+    // 4. Default if nothing was identified
+    this.showToast(`🎯 Enceinte sélectionnée : ${speakerName}`);
+    this.updateSpeakerInfo();
+    this.render();
   }
 
   updateSpeakerModalUI() {
@@ -4958,7 +5379,7 @@ class NasMusicCard extends HTMLElement {
 
     let sectionHeader = "";
     if (this.currentView === "category") {
-      const catLabel = this.getCategories()[this.activeCategory]?.label || "";
+      const catLabel = CATEGORIES[this.activeCategory]?.label || "";
       sectionHeader = `<div style="font-size:12px;color:#9ca3af;margin:2px 2px 10px;font-weight:600;display:flex;justify-content:space-between;align-items:center;">
         <span>${catLabel}</span>
         <span style="font-size:11px;color:#6b7280;">${this.totalItems} album(s) au total</span>
@@ -5018,7 +5439,14 @@ class NasMusicCard extends HTMLElement {
   renderNowPlayingView() {
     const info = this.getNowPlayingInfo();
     const speakerObj = this.getSpeakers().find(s => s.id === this.selectedSpeaker);
-    const speakerName = speakerObj ? speakerObj.name : "Enceinte";
+    let speakerName = speakerObj ? speakerObj.name : "Enceinte";
+    const isMulti = this.selectedSpeakersMulti && this.selectedSpeakersMulti.size > 1;
+    if (isMulti) {
+      const names = Array.from(this.selectedSpeakersMulti)
+        .map(sid => this.getSpeakers().find(s => s.id === sid)?.name || sid)
+        .join(", ");
+      speakerName = `Multi-diffusion (${this.selectedSpeakersMulti.size}) : ${names}`;
+    }
 
     return `
       <div class="nowplaying-view">
@@ -5030,7 +5458,7 @@ class NasMusicCard extends HTMLElement {
             <div class="np-title" id="np-title-txt" title="${info.mediaTitle}">${info.mediaTitle}</div>
             <div class="np-artist" id="np-artist-txt" title="${info.mediaArtist}">${info.mediaArtist || "Artiste inconnu"}</div>
             <div class="np-album" id="np-album-txt" title="${info.mediaAlbum}" style="${info.mediaAlbum ? '' : 'display:none;'}">${info.mediaAlbum || ''}</div>
-            <div class="np-speaker-badge">🔊 ${speakerName}</div>
+            <div class="np-speaker-badge">${isMulti ? '📡' : '🔊'} ${speakerName}</div>
           </div>
         </div>
 
@@ -5202,18 +5630,9 @@ class NasMusicCard extends HTMLElement {
     const sel = root.getElementById("speaker-dropdown");
     if (sel) {
       sel.onchange = () => {
-        this.selectedSpeaker = sel.value;
-        localStorage.setItem("nas_music_speaker", this.selectedSpeaker);
-        const speakerObj = this.getSpeakers().find(s => s.id === this.selectedSpeaker);
-        if (speakerObj && speakerObj.zone && this._hass) {
-          this._hass.callService("input_select", "select_option", {
-            entity_id: "input_select.zone_ecoute_multimedia",
-            option: speakerObj.zone
-          }).catch(() => {});
+        if (sel.value && sel.value !== "__multi__") {
+          this.transferPlaybackTo(sel.value);
         }
-        window.dispatchEvent(new CustomEvent("nas-music-speaker-changed", { detail: { speaker: this.selectedSpeaker } }));
-        this.updateSpeakerInfo();
-        if (this.currentView === "album" || this.currentView === "nowplaying") this.render();
       };
     }
 
@@ -5221,6 +5640,12 @@ class NasMusicCard extends HTMLElement {
     if (openSpeakerMgrBtn) {
       openSpeakerMgrBtn.onclick = () => {
         this.showSpeakerManager = true;
+        if (!this.selectedSpeakersMulti) {
+          this.selectedSpeakersMulti = new Set();
+        }
+        if (this.selectedSpeaker && this.selectedSpeakersMulti.size === 0) {
+          this.selectedSpeakersMulti.add(this.selectedSpeaker);
+        }
         this.render();
       };
     }
@@ -5921,7 +6346,9 @@ class NasMusicCard extends HTMLElement {
       btnPartout.onclick = () => {
         this.selectedSpeaker = "media_player.partout";
         localStorage.setItem("nas_music_speaker", this.selectedSpeaker);
-        this.showToast("🌐 Diffusion sur Partout (Multi-room)");
+        this.selectedSpeakersMulti.clear();
+        this.selectedSpeakersMulti.add("media_player.partout");
+        this.broadcastToSelection();
         this.render();
       };
     }
@@ -5932,7 +6359,9 @@ class NasMusicCard extends HTMLElement {
       btnChambre.onclick = () => {
         this.selectedSpeaker = "media_player.chambre";
         localStorage.setItem("nas_music_speaker", this.selectedSpeaker);
-        this.showToast("🛏️ Diffusion sur Chambre (2 Echos)");
+        this.selectedSpeakersMulti.clear();
+        this.selectedSpeakersMulti.add("media_player.chambre");
+        this.broadcastToSelection();
         this.render();
       };
     }
@@ -5947,6 +6376,12 @@ class NasMusicCard extends HTMLElement {
 
     // Multi-diffusion button
     const btnMultiCast = root.getElementById("btn-multi-cast");
+    const updateMultiCastCount = () => {
+      if (btnMultiCast) {
+        const count = this.selectedSpeakersMulti ? this.selectedSpeakersMulti.size : 0;
+        btnMultiCast.textContent = count > 0 ? `▶ Diffuser sur la sélection (${count})` : "▶ Diffuser sur la sélection";
+      }
+    };
     if (btnMultiCast) {
       btnMultiCast.onclick = () => {
         this.broadcastToSelection();
@@ -5962,6 +6397,26 @@ class NasMusicCard extends HTMLElement {
         } else {
           this.selectedSpeakersMulti.delete(sid);
         }
+        updateMultiCastCount();
+      };
+    });
+
+    // Click on speaker info to toggle checkbox
+    root.querySelectorAll(".speaker-main-info").forEach(info => {
+      info.onclick = () => {
+        const card = info.closest(".modal-speaker-card");
+        if (!card) return;
+        const cb = card.querySelector(".speaker-multi-check");
+        if (cb) {
+          cb.checked = !cb.checked;
+          const sid = cb.dataset.speakerId;
+          if (cb.checked) {
+            this.selectedSpeakersMulti.add(sid);
+          } else {
+            this.selectedSpeakersMulti.delete(sid);
+          }
+          updateMultiCastCount();
+        }
       };
     });
 
@@ -5969,19 +6424,7 @@ class NasMusicCard extends HTMLElement {
     root.querySelectorAll(".btn-speaker-select").forEach(btn => {
       btn.onclick = () => {
         const sid = btn.dataset.speakerId;
-        this.selectedSpeaker = sid;
-        localStorage.setItem("nas_music_speaker", this.selectedSpeaker);
-        const speakerObj = this.getSpeakers().find(s => s.id === sid);
-        if (speakerObj && speakerObj.zone && this._hass) {
-          this._hass.callService("input_select", "select_option", {
-            entity_id: "input_select.zone_ecoute_multimedia",
-            option: speakerObj.zone
-          }).catch(() => {});
-        }
-        window.dispatchEvent(new CustomEvent("nas-music-speaker-changed", { detail: { speaker: sid } }));
-        const name = speakerObj?.name || sid;
-        this.showToast(`🎯 Enceinte active : ${name}`);
-        this.render();
+        this.transferPlaybackTo(sid);
       };
     });
 
@@ -6051,45 +6494,16 @@ class NasMusicCardEditor extends HTMLElement {
     this._hass = hass;
   }
 
-  _notifyChange(newConfig) {
-    this._config = newConfig;
-    this.dispatchEvent(new CustomEvent("config-changed", {
-      detail: { config: newConfig },
-      bubbles: true,
-      composed: true
-    }));
-  }
-
   render() {
-    const isSpotify = this._config.show_spotify !== false && Boolean(this._config.spotify_player);
-
     this.innerHTML = `
       <div style="padding: 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--primary-text-color);">
         <h3 style="margin-top:0;margin-bottom:8px;font-size:15px;display:flex;align-items:center;gap:6px;">
           🎵 Configuration du lecteur NAS Music
         </h3>
         <p style="font-size:12px;color:var(--secondary-text-color);margin-bottom:14px;line-height:1.4;">
-          Personnalisez la connexion Jellyfin, vos enceintes, vos catégories et l'intégration Spotify.
+          Personnalisez la carte, vos enceintes ou vos stations de radios.
         </p>
 
-        <!-- JELLYFIN SERVER -->
-        <div style="border: 1px solid var(--divider-color, rgba(255,255,255,0.1)); border-radius: 8px; padding: 12px; margin-bottom: 14px; background: rgba(255,255,255,0.02);">
-          <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">📡 Serveur Jellyfin</div>
-          <div style="margin-bottom: 10px;">
-            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">URL Jellyfin (HTTPS)</label>
-            <input id="cfg-jellyfin-url" type="text" value="${this._config.jellyfin_url || ''}" placeholder="https://jelly.votredomaine.fr" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
-          </div>
-          <div style="margin-bottom: 10px;">
-            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">Clé d'API Jellyfin (Token)</label>
-            <input id="cfg-jellyfin-token" type="password" value="${this._config.jellyfin_token || ''}" placeholder="Votre clé d'API Jellyfin" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
-          </div>
-          <div>
-            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">Nom d'invocation du skill Alexa</label>
-            <input id="cfg-skill-invocation" type="text" value="${this._config.skill_invocation || ''}" placeholder="mon nas (ex: demande à <mon nas> de jouer...)" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
-          </div>
-        </div>
-
-        <!-- ENCEINTE PAR DÉFAUT -->
         <div style="margin-bottom:14px;">
           <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">
             Enceinte par défaut (ID Home Assistant)
@@ -6097,94 +6511,87 @@ class NasMusicCardEditor extends HTMLElement {
           <input id="cfg-speaker" type="text" value="${this._config.default_speaker || ''}" placeholder="media_player.echo_chambre" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
         </div>
 
-        <!-- SPOTIFY OPTIONNEL -->
-        <div style="border: 1px solid var(--divider-color, rgba(255,255,255,0.1)); border-radius: 8px; padding: 12px; margin-bottom: 14px; background: rgba(255,255,255,0.02);">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-            <span style="font-size: 13px; font-weight: 600;">🟢 Intégration Spotify</span>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
-              <input id="cfg-show-spotify" type="checkbox" ${isSpotify ? 'checked' : ''}>
-              Activer Spotify
-            </label>
-          </div>
-          <div id="spotify-field-wrap" style="${isSpotify ? '' : 'display:none;'}">
-            <label style="display:block;font-size:11px;font-weight:600;margin-bottom:4px;">Entité Lecteur Spotify Home Assistant</label>
-            <input id="cfg-spotify-player" type="text" value="${this._config.spotify_player || ''}" placeholder="media_player.spotifyplus_utilisateur" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
+        <div style="margin-bottom:14px;">
+          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">
+            🔗 Vue ou URL de redirection vers le lecteur complet
+          </label>
+          <input id="cfg-player-url" type="text" list="cfg-views-list" value="${this._config.player_url || ''}" placeholder="/lovelace/multimedias" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
+          <datalist id="cfg-views-list">
+            <option value="/lovelace/multimedias">Multimedias</option>
+            <option value="/lovelace/multimedias-test">Multimédias Test</option>
+            <option value="/lovelace/musique">Musique</option>
+            <option value="/lovelace/0">Vue principale</option>
+          </datalist>
+          <div style="font-size:11px;color:var(--secondary-text-color);margin-top:4px;line-height:1.35;">
+            Chemin ouvert lors du clic sur « 🎶 Changer de titre » ou sur la pochette (ex: <code>/lovelace/multimedias</code>). Si le lecteur est déjà présent sur la même vue, l'écran défilera directement jusqu'à lui.
           </div>
         </div>
 
-        <!-- FOURNISSEUR RADIO -->
         <div style="margin-bottom:14px;">
           <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">
             Fournisseur Radio sur Amazon Echo
           </label>
           <select id="cfg-radio-provider" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color, #444);background:var(--card-background-color, #222);color:inherit;box-sizing:border-box;">
-            <option value="audioplayer" ${(!this._config.radio_provider || this._config.radio_provider === 'audioplayer') ? 'selected' : ''}>📻 Audio Player (Recommandé)</option>
-            <option value="tunein" ${this._config.radio_provider === 'tunein' ? 'selected' : ''}>📡 TuneIn</option>
-            <option value="radioplayer" ${this._config.radio_provider === 'radioplayer' ? 'selected' : ''}>🇫🇷 Radioplayer France</option>
+            <option value="radioplayer" ${(!this._config.radio_provider || this._config.radio_provider === 'radioplayer') ? 'selected' : ''}>📻 Radioplayer France (Officiel, sans pub TuneIn)</option>
+            <option value="tunein" ${this._config.radio_provider === 'tunein' ? 'selected' : ''}>📡 TuneIn (Standard avec pubs)</option>
           </select>
         </div>
 
-        <!-- EXPLICATION CATEGORIES / DOSSIERS EN YAML -->
         <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:12px;line-height:1.5;">
-          <strong>📁 Personnalisation des onglets et dossiers musicaux :</strong><br>
-          Par défaut, la carte affiche automatiquement <strong>Favoris</strong>, <strong>Tous les Albums</strong> et <strong>Playlists</strong>.<br>
-          Pour ajouter vos propres dossiers/catégories Jellyfin (ex: Compilations, Rock, Pop), ajoutez en mode YAML :
-          <pre style="background:rgba(0,0,0,0.4);padding:8px;border-radius:4px;overflow-x:auto;font-size:11px;margin:8px 0 0 0;">categories:
-  - id: "favorites"
-    label: "⭐ Favoris"
-    type: "favorites"
-  - id: "albums"
-    label: "💿 Tous les Albums"
-    type: "jellyfin"
-    itemTypes: "MusicAlbum"
-  - id: "compilations"
-    label: "📁 Compilations"
-    type: "jellyfin"
-    parentId: "ID_DOSSIER_JELLYFIN"
-    itemTypes: "MusicAlbum"</pre>
-          <div style="font-size:11px;color:var(--secondary-text-color);margin-top:6px;">
-            💡 <em>Astuce : pour trouver l'ID d'un dossier dans Jellyfin, cliquez dessus dans l'interface web et copiez l'identifiant après <code>?id=</code> dans la barre d'adresse.</em>
-          </div>
+          <strong>📻 Gestion des stations de radios :</strong><br>
+          • Directement dans la carte : cliquez sur l'onglet <strong>📻 Radios</strong> puis sur le bouton <strong>⚙️ Gérer les radios</strong> pour ajouter, modifier ou supprimer des stations graphiquement.<br>
+          • En YAML : vous pouvez définir la clé <code>radios:</code> pour fixer la liste pour tous les utilisateurs.
         </div>
       </div>
     `;
 
-    // Listeners
-    const bindInput = (id, prop) => {
-      const el = this.querySelector(id);
-      if (el) {
-        el.onchange = (e) => {
-          const val = e.target.value.trim();
-          const newCfg = { ...this._config };
-          if (val) newCfg[prop] = val;
-          else delete newCfg[prop];
-          this._notifyChange(newCfg);
-        };
-      }
-    };
+    const input = this.querySelector("#cfg-speaker");
+    if (input) {
+      input.onchange = (e) => {
+        const val = e.target.value.trim();
+        const newConfig = { ...this._config };
+        if (val) {
+          newConfig.default_speaker = val;
+        } else {
+          delete newConfig.default_speaker;
+        }
+        const event = new CustomEvent("config-changed", {
+          detail: { config: newConfig },
+          bubbles: true,
+          composed: true
+        });
+        this.dispatchEvent(event);
+      };
+    }
 
-    bindInput("#cfg-jellyfin-url", "jellyfin_url");
-    bindInput("#cfg-jellyfin-token", "jellyfin_token");
-    bindInput("#cfg-skill-invocation", "skill_invocation");
-    bindInput("#cfg-speaker", "default_speaker");
-    bindInput("#cfg-spotify-player", "spotify_player");
-
-    const chkSpotify = this.querySelector("#cfg-show-spotify");
-    const spWrap = this.querySelector("#spotify-field-wrap");
-    if (chkSpotify) {
-      chkSpotify.onchange = (e) => {
-        const checked = e.target.checked;
-        if (spWrap) spWrap.style.display = checked ? "" : "none";
-        const newCfg = { ...this._config, show_spotify: checked };
-        if (!checked) delete newCfg.spotify_player;
-        this._notifyChange(newCfg);
+    const inputUrl = this.querySelector("#cfg-player-url");
+    if (inputUrl) {
+      inputUrl.onchange = (e) => {
+        const val = e.target.value.trim();
+        const newConfig = { ...this._config };
+        if (val) {
+          newConfig.player_url = val;
+        } else {
+          delete newConfig.player_url;
+        }
+        this.dispatchEvent(new CustomEvent("config-changed", {
+          detail: { config: newConfig },
+          bubbles: true,
+          composed: true
+        }));
       };
     }
 
     const selRadio = this.querySelector("#cfg-radio-provider");
     if (selRadio) {
       selRadio.onchange = (e) => {
-        this._notifyChange({ ...this._config, radio_provider: e.target.value });
+        const val = e.target.value;
+        const newConfig = { ...this._config, radio_provider: val };
+        this.dispatchEvent(new CustomEvent("config-changed", {
+          detail: { config: newConfig },
+          bubbles: true,
+          composed: true
+        }));
       };
     }
   }
@@ -6373,7 +6780,7 @@ class NasMusicControlCard extends HTMLElement {
     // 3. Spotify check : Actif uniquement si le NAS n'est PAS en train de jouer et que Spotify cible cette enceinte
     const isNasActivelyPlaying = isPlaying || (nasSensor && nasSensor.state === "playing");
     if (!isNasActivelyPlaying && !isLocal) {
-      const spotifyEntity = this._config?.spotify_player || null;
+      const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
       const spState = this._hass?.states?.[spotifyEntity];
       const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === speakerId);
       const isTargetOfSpotify = (
@@ -6789,7 +7196,7 @@ class NasMusicControlCard extends HTMLElement {
           this.updateCard();
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || null;
+        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);
@@ -6827,7 +7234,7 @@ class NasMusicControlCard extends HTMLElement {
           window.dispatchEvent(new CustomEvent("nas-music-remote-next"));
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || null;
+        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);
@@ -6853,7 +7260,7 @@ class NasMusicControlCard extends HTMLElement {
           window.dispatchEvent(new CustomEvent("nas-music-remote-prev"));
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || null;
+        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);
@@ -6880,7 +7287,7 @@ class NasMusicControlCard extends HTMLElement {
           window._nasMusicLocalAudio.currentTime = pos;
           return;
         }
-        const spotifyEntity = this._config?.spotify_player || null;
+        const spotifyEntity = this._config?.spotify_player || "media_player.spotifyplus_alaindaix";
         const spState = this._hass?.states?.[spotifyEntity];
         const speakerState = this._hass?.states?.[info.speakerId];
         const speakerObj = DEFAULT_SPEAKERS.find(s => s.id === info.speakerId);
